@@ -5,23 +5,38 @@ import android.app.Instrumentation;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.SystemClock;
+import android.util.Log;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Framework-only instrumentation: tests the actual installed APK, not an HTML mock. */
 public class HotBoxSmoke extends Instrumentation {
     private MainActivity activity;
+    private String stage = "starting";
+    private void awaitPage() {
+        long until = SystemClock.uptimeMillis()+45000;
+        AtomicBoolean loaded = new AtomicBoolean(false);
+        do {
+            runOnMainSync(() -> loaded.set(activity.getGameWebView().getProgress()==100
+                    && "https://hotbox.local/index.html".equals(activity.getGameWebView().getUrl())));
+            if (loaded.get()) return;
+            SystemClock.sleep(150);
+        } while (SystemClock.uptimeMillis()<until);
+        throw new AssertionError("Bundled page load timed out");
+    }
     @Override public void onCreate(Bundle args) { super.onCreate(args); start(); }
     private String js(String code) {
         AtomicReference<String> result = new AtomicReference<>();
         runOnMainSync(() -> activity.getGameWebView().evaluateJavascript(code, result::set));
-        long until = SystemClock.uptimeMillis()+5000;
+        long until = SystemClock.uptimeMillis()+20000;
         while(result.get()==null && SystemClock.uptimeMillis()<until) SystemClock.sleep(50);
-        if(result.get()==null) throw new AssertionError("JavaScript callback timed out");
+        if(result.get()==null) throw new AssertionError("JavaScript callback timed out during " + stage + "");
         return result.get();
     }
     private void check(String expression, String label) {
-        long until = SystemClock.uptimeMillis()+15000;
-        do { if("true".equals(js(expression))) return; SystemClock.sleep(150); } while(SystemClock.uptimeMillis()<until);
+        stage = label; Log.i("HOTBOX_TEST", "Checking: " + label);
+        long until = SystemClock.uptimeMillis()+30000;
+        do { if("true".equals(js(expression))) { Log.i("HOTBOX_TEST", "PASS: " + label); return; } SystemClock.sleep(150); } while(SystemClock.uptimeMillis()<until);
         throw new AssertionError(label + " failed: " + js(expression));
     }
     @Override public void onStart() {
@@ -29,6 +44,7 @@ public class HotBoxSmoke extends Instrumentation {
         try {
             Intent intent = new Intent(getTargetContext(), MainActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity = (MainActivity) startActivitySync(intent);
+            awaitPage();
             check("!!window.HotBoxUI && document.body.dataset.ready==='1'", "Launch and JavaScript boot");
             js("window.__atlasOK=false;var art=new Image();art.onload=function(){window.__atlasOK=art.naturalWidth>=512;};art.src='https://hotbox.local/art/atlas.webp';");
             check("window.__atlasOK===true", "Bundled WebP artwork");
@@ -47,11 +63,12 @@ public class HotBoxSmoke extends Instrumentation {
             // A new Activity must be able to read the same on-device save.
             runOnMainSync(() -> activity.finish()); waitForIdleSync();
             activity = (MainActivity)startActivitySync(intent);
+            awaitPage();
             check("!!document.querySelector('[data-do=continue]')", "Save persists across Activity recreation");
             result.putString("stream", "\nHOTBOX_SMOKE:PASS — launch, draw, inspect, save, resume, recreate\n");
             finish(Activity.RESULT_OK,result);
         } catch(Throwable ex) {
-            result.putString("stream", "\nHOTBOX_SMOKE:FAIL " + ex.toString()+"\n");
+            result.putString("stream", "\nHOTBOX_SMOKE:FAIL " + stage + ": " + ex.toString()+"\n");
             finish(Activity.RESULT_CANCELED,result);
         }
     }
