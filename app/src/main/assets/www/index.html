@@ -6,6 +6,7 @@
 <meta name="theme-color" content="#0b111a">
 <title>Hot Box</title>
 <link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="afterhours.css">
 </head>
 <body>
 <div id="root"><div class="boot"><strong>HOT BOX</strong><p>Shuffling the table…</p></div></div>
@@ -16,7 +17,10 @@
 <script>
 window.addEventListener('error',function(e){var el=document.getElementById('notice');if(el){el.hidden=false;el.textContent='Hot Box hit an error: '+(e.message||'unknown error')+'. Close and reopen to restore your saved turn.';}});
 </script>
+<script src="art.js"></script>
 <script src="engine.js"></script>
+<script src="campaign.js"></script>
 <script src="app.js"></script>
+<script src="campaign-ui.js"></script>
 </body>
 </html>

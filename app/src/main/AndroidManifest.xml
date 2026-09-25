@@ -4,7 +4,7 @@
     <application android:allowBackup="false" android:enableOnBackInvokedCallback="false" android:label="@string/app_name"
         android:icon="@drawable/ic_launcher" android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true" android:theme="@style/AppTheme" android:usesCleartextTraffic="false">
-        <activity android:name=".MainActivity" android:exported="true"
+        <activity android:name="uk.co.hotbox.cardgame.MainActivity" android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

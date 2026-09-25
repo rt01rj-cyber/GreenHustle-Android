@@ -14,6 +14,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.TextView;
+import android.widget.FrameLayout;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Collections;
@@ -27,9 +28,20 @@ public class MainActivity extends Activity {
         try {
             web = new WebView(this);
             web.setBackgroundColor(Color.rgb(11,17,26));
-            web.setOnApplyWindowInsetsListener((v, insets) -> {
-                v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
-                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            // AFTER_HOURS_INSETS_030: resize child, do not merely pad WebView pixels.
+            FrameLayout frame = new FrameLayout(this);
+            frame.setBackgroundColor(Color.rgb(11,17,26));
+            frame.addView(web,new FrameLayout.LayoutParams(-1,-1));
+            frame.setOnApplyWindowInsetsListener((v,insets) -> {
+                int left=insets.getSystemWindowInsetLeft(), top=insets.getSystemWindowInsetTop();
+                int right=insets.getSystemWindowInsetRight(), bottom=insets.getSystemWindowInsetBottom();
+                if (android.os.Build.VERSION.SDK_INT >= 28 && insets.getDisplayCutout()!=null) {
+                    left=Math.max(left,insets.getDisplayCutout().getSafeInsetLeft());
+                    top=Math.max(top,insets.getDisplayCutout().getSafeInsetTop());
+                    right=Math.max(right,insets.getDisplayCutout().getSafeInsetRight());
+                    bottom=Math.max(bottom,insets.getDisplayCutout().getSafeInsetBottom());
+                }
+                v.setPadding(left,top,right,bottom);
                 return insets.consumeSystemWindowInsets();
             });
             WebSettings settings = web.getSettings();
@@ -58,7 +70,7 @@ public class MainActivity extends Activity {
                         if (path == null || path.equals("/")) path = "/index.html";
                         if (path.contains("..") || !path.matches("/[a-zA-Z0-9_./-]+")) return denied();
                         InputStream stream = getAssets().open("www" + path);
-                        String mime = path.endsWith(".js") ? "application/javascript" : path.endsWith(".css") ? "text/css" : path.endsWith(".webp") ? "image/webp" : path.endsWith(".svg") ? "image/svg+xml" : "text/html";
+                        String mime = path.endsWith(".js") ? "application/javascript" : path.endsWith(".css") ? "text/css" : path.endsWith(".webp") ? "image/webp" : path.endsWith(".png") ? "image/png" : path.endsWith(".svg") ? "image/svg+xml" : "text/html";
                         WebResourceResponse response = new WebResourceResponse(mime, "UTF-8", stream);
                         response.setResponseHeaders(Collections.singletonMap("Cache-Control", "no-store"));
                         return response;
@@ -69,8 +81,8 @@ public class MainActivity extends Activity {
                 }
             });
             // Attach first. Startup avoids the early fullscreen/insets calls in the previous app.
-            setContentView(web);
-            web.requestApplyInsets();
+            setContentView(frame);
+            frame.requestApplyInsets();
             web.loadUrl("https://" + HOST + "/index.html");
         } catch (RuntimeException ex) { showError(ex); }
     }

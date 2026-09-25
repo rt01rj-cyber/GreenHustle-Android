@@ -1,0 +1,27 @@
+            // AFTER_HOURS_NATIVE_030
+            js("localStorage.removeItem('hotbox-afterhours-v3'); document.querySelector('[data-ah=heroes]').click()");
+            check("document.querySelectorAll('.hero-select').length===3", "Three campaign characters");
+            js("document.querySelector('[data-hero=riz]').click(); document.querySelector('[data-ah=intro]').click()");
+            check("!!document.querySelector('.story-frame')", "Story and goal briefing");
+            js("document.querySelector('[data-ah=launch]').click()");
+            check("AHUI.run().stage==='battle' && HotBoxUI.state().campaign.hero==='riz'", "Launch story encounter");
+            js("document.querySelector('[data-do=draw]').click(); document.querySelector('[data-ah=skill]').click()");
+            check("!!document.querySelector('.redraw-grid')", "Character ability selection");
+            js("document.querySelectorAll('[data-ah=pick]')[1].click(); document.querySelector('[data-ah=redraw-go]').click()");
+            check("HotBoxUI.state().players[0].skillUsed && HotBoxUI.state().phase==='act'", "Riz free redraw");
+            java.util.concurrent.atomic.AtomicBoolean insetSafe = new java.util.concurrent.atomic.AtomicBoolean(false);
+            runOnMainSync(() -> {
+                int[] xy=new int[2]; activity.getGameWebView().getLocationOnScreen(xy);
+                android.view.WindowInsets wi=activity.getWindow().getDecorView().getRootWindowInsets();
+                int top=wi==null?0:wi.getSystemWindowInsetTop();
+                insetSafe.set(xy[1]>=top && activity.getGameWebView().getHeight()>100);
+                Log.i("HOTBOX_TEST","Inset top="+top+", web top="+xy[1]+", web height="+activity.getGameWebView().getHeight());
+            });
+            if(!insetSafe.get()) throw new AssertionError("Web content overlaps status bar");
+            js("document.querySelector('[data-do=pausemenu]').click(); document.querySelector('[data-do=home]').click()");
+            check("!!document.querySelector('[data-do=continue]') && !!document.querySelector('[data-ah=continue]')", "Separate Classic and campaign saves");
+            runOnMainSync(() -> activity.finish()); waitForIdleSync();
+            activity = (MainActivity)startActivitySync(intent); awaitPage();
+            check("!!document.querySelector('[data-ah=continue]')", "Campaign persists after Activity recreation");
+            js("document.querySelector('[data-ah=continue]').click()");
+            check("AHUI.run().hero==='riz' && HotBoxUI.state().players[0].skillUsed && HotBoxUI.state().phase==='act'", "Campaign restores exact turn and used ability");

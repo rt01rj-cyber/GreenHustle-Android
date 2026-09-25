@@ -47,6 +47,7 @@
     s.players.forEach(function(p){p.hand=[s.deck.splice(s.deck.findIndex(function(c){return c.id==='burner';}),1)[0]];p.stash=[];p.line=0;p.raid=0;p.fake=false;p.roundBank=0;});
     shuffle(s,s.deck);
     for(var j=0;j<4;j++)s.players.forEach(function(p){p.hand.push(s.deck.shift());});
+    s.players.forEach(function(p){if(!p.hand.some(function(c){return c.id==='baggie';})){var ix=s.deck.findIndex(function(c){return c.id==='baggie';});if(ix>=0){var old=p.hand[4];p.hand[4]=s.deck[ix];s.deck[ix]=old;}}});
     var lower=Math.ceil(s.deck.length*2/3),at=lower+Math.floor(rng(s)*(s.deck.length-lower+1));
     s.deck.splice(at,0,{id:'raptor',uid:s.round+'-raptor-0'});
     s.initialDeck=s.deck.length;s.phase='draw';event(s,'round','Round '+s.round+'. Build your stash. Bank before the raid.');return {ok:true};
@@ -73,7 +74,7 @@
       if(d.id==='search'){
         var pool=p.stash.length?p.stash:p.hand;
         var products=pool.filter(function(c){return value(c)>0;}).sort(function(x,y){return value(y)-value(x);});
-        if(products.length){var c=products[0];pool.splice(pool.indexOf(c),1);s.discard.push(c);note=p.name+' loses '+def(c).name+'.';}
+        if(products.length){var c=products[0];if(pool===p.stash&&c.id==='baggie'&&p.mods&&p.mods.cushion&&!p.cushionUsed){p.cushionUsed=true;note=p.name+' keeps The 3.5. Cwtch Cushion!';}else{pool.splice(pool.indexOf(c),1);s.discard.push(c);note=p.name+' loses '+def(c).name+'.';}}
         else note=p.name+' has no product to seize.';
       } else {p.raid=2;note=p.name+' is raided: no selling or banking for two turns.';}
       event(s,'hit',note,d.id,a.from,a.to);
@@ -88,7 +89,7 @@
     var p=s.players[seat],out=[];
     p.hand.forEach(function(c){
       var d=def(c);out.push({type:'discard',uid:c.uid});
-      if(d.kind==='product'&&p.line&&!p.raid&&p.stash.length<6)out.push({type:'play',uid:c.uid});
+      if(d.kind==='product'&&p.line&&!p.raid&&p.stash.length<(p.maxStash||6))out.push({type:'play',uid:c.uid});
       if((c.id==='burner'&&!p.line)||(c.id==='whip'&&p.line<2))out.push({type:'play',uid:c.uid});
       if(c.id==='solicitor'&&(p.raid||p.fake)||c.id==='nocomment'&&p.raid)out.push({type:'play',uid:c.uid});
       if(d.kind==='hassle')s.players.forEach(function(q,j){
@@ -101,6 +102,7 @@
     });
     if(p.line&&!p.raid)p.stash.forEach(function(c){out.push({type:'bank',uid:c.uid});});
     if(!out.length)out.push({type:'pass'});
+    if(p.mods&&p.mods.double&&p.line&&!p.raid&&p.stash.filter(function(c){return c.id==='baggie';}).length>=2)out.push({type:'bankpair'});
     return out;
   }
   function equivalent(a,b) { return ['type','uid','target','card','sacrifice'].every(function(k){return a[k]===b[k];}); }
@@ -110,17 +112,32 @@
     if(a.type==='draw'){
       c=s.deck.shift();
       if(!c||c.id==='raptor'){if(c)s.discard.push(c);roundEnd(s);return {ok:true};}
-      p.hand.push(c);s.phase='act';event(s,'draw',p.name+' draws. Choose one action.',null,seat);return {ok:true};
+      p.hand.push(c);var queued=p.bonusDraw||0;p.bonusDraw=0;while(queued-->0){var extra=s.deck.shift();if(!extra||extra.id==='raptor'){if(extra)s.discard.push(extra);roundEnd(s);return {ok:true};}p.hand.push(extra);}
+      s.phase='act';event(s,'draw',p.name+' draws. Choose one action.',null,seat);return {ok:true};
     }
     if(a.type==='accept'){finishHit(s,false);return {ok:true};}
     if(a.type==='react'){
       var ix=p.hand.findIndex(function(x){return x.id===a.card;});c=p.hand.splice(ix,1)[0];s.discard.push(c);
       if(a.sacrifice){ix=p.hand.findIndex(function(x){return x.uid===a.sacrifice;});s.discard.push(p.hand.splice(ix,1)[0]);}
-      s.stats.counters++;event(s,'counter',p.name+' shuts it down. '+def(c).name+'!',c.id,seat,s.pending.from);finishHit(s,true);return {ok:true};
+      var reward='';if(!p.counterUsed){p.counterUsed=true;if(p.hero==='caz'){p.bonusDraw=(p.bonusDraw||0)+1;reward+=' Second Wind: extra card on your next draw.';}if(p.mods&&p.mods.counterpay){p.bank+=5000;p.roundBank+=5000;reward+=' Comeback Bonus: +£5k banked.';}}
+      s.stats.counters++;event(s,'counter',p.name+' shuts it down. '+def(c).name+'!'+reward,c.id,seat,s.pending.from);finishHit(s,true);return {ok:true};
     }
-    if(a.type==='bank'){
-      c=p.stash.splice(p.stash.findIndex(function(x){return x.uid===a.uid;}),1)[0];var cash=value(c)*(p.fake?0.5:1),reduced=p.fake;p.fake=false;p.bank+=cash;p.roundBank+=cash;s.stats.banks++;s.discard.push(c);
-      event(s,'bank',p.name+' banks '+money(cash)+(reduced?' — Fake Batch took half.':'. Safe from Raptor.'),c.id,seat);advance(s);return {ok:true};
+    if(a.type==='bank'||a.type==='bankpair'){
+      var take=a.type==='bankpair'?p.stash.filter(function(x){return x.id==='baggie';}).slice(0,2):[p.stash.find(function(x){return x.uid===a.uid;})];
+      var cash=0,reduced=p.fake,mods=p.mods||{},bonus=0,bonusNames=[];
+      take.forEach(function(x,index){var base=value(x),extra=0;
+        if(x.id==='baggie'&&mods.pocket){extra+=5000;bonusNames.push('Pocket Rocket');}
+        if(x.id==='vape'&&mods.vapesurge){extra+=5000;bonusNames.push('Pocket Premium');}
+        if(x.id==='cali'&&mods.calicash){extra+=10000;bonusNames.push('Fancy Packaging');}
+        cash+=(base+extra)*(index===0&&reduced?0.5:1);p.stash.splice(p.stash.indexOf(x),1);s.discard.push(x);
+      });
+      p.bankCount=(p.bankCount||0)+1;
+      if(mods.loyalty&&p.bankCount%3===0){bonus+=10000;bonusNames.push('Third Time Lucky');}
+      if(mods.rainyday&&p.bankCount===1){bonus+=10000;bonusNames.push('Rainy Day Fund');}
+      if(p.nextBonus){bonus+=p.nextBonus;p.nextBonus=0;bonusNames.push('Lucky Receipt');}
+      cash+=bonus;p.fake=false;p.bank+=cash;p.roundBank+=cash;s.stats.banks++;
+      event(s,'bank',p.name+' banks '+money(cash)+(reduced?' — first product halved.':'. Safe from Raptor.')+(bonusNames.length?' '+bonusNames.join(' + ')+'!':''),take[0].id,seat);
+      advance(s);return {ok:true};
     }
     if(a.type==='pass'){advance(s);return {ok:true};}
     c=p.hand.splice(p.hand.findIndex(function(x){return x.uid===a.uid;}),1)[0];d=def(c);
@@ -156,7 +173,8 @@
     var urgency=s.deck.length<s.initialDeck/3?25:0;
     var scored=opts.map(function(a){
       var score=-100;
-      if(a.type==='bank'){var v=value(p.stash.find(function(c){return c.uid===a.uid;}));score=55+v/2000+urgency;if(p.fake)score-=35;if(p.avatar===1)score+=12;}
+      if(a.type==='bankpair')score=85+urgency;
+      if(a.type==='bank'){var v=value(p.stash.find(function(c){return c.uid===a.uid;}));score=55+v/2000+urgency;if(p.mods&&p.mods.pocket&&v===5000)score+=6;if(p.fake)score-=35;if(p.avatar===1)score+=12;}
       if(a.type==='play'){
         var c=p.hand.find(function(x){return x.uid===a.uid;}),d=def(c);
         if(c.id==='burner'||c.id==='whip')score=!p.line?130:10;
@@ -178,6 +196,13 @@
     });
     scored.sort(function(a,b){return b.score-a.score;});return scored[0].action;
   }
+  function redraw(s,seat,uids){
+    if(s.phase!=='act'||s.current!==seat||!Array.isArray(uids)||uids.length<1||uids.length>2||new Set(uids).size!==uids.length)return {ok:false,error:'Choose one or two different hand cards, after drawing.'};
+    var p=s.players[seat];if(uids.some(function(uid){return !p.hand.some(function(c){return c.uid===uid;});}))return {ok:false,error:'That card is not in your hand.'};
+    uids.forEach(function(uid){s.discard.push(p.hand.splice(p.hand.findIndex(function(c){return c.uid===uid;}),1)[0]);});
+    for(var i=0;i<uids.length;i++){var c=s.deck.shift();if(!c||c.id==='raptor'){if(c)s.discard.push(c);roundEnd(s);return {ok:true};}p.hand.push(c);}
+    event(s,'skill',p.name+' refreshes '+uids.length+' card'+(uids.length===1?'':'s')+'. Main action still available.',null,seat);return {ok:true};
+  }
   function restore(raw) {
     var s=typeof raw==='string'?JSON.parse(raw):raw;
     if(!s||s.version!==2||!Array.isArray(s.players)||s.players.length<2||s.players.length>6||!Array.isArray(s.deck)||!Array.isArray(s.discard)||!Number.isInteger(s.current)||s.current<0||s.current>=s.players.length||['draw','act','react','round','over'].indexOf(s.phase)<0)throw new Error('Incompatible save');
@@ -187,5 +212,7 @@
     if(s.phase==='react'&&(!s.pending||!Number.isInteger(s.pending.to)||s.pending.to<0||s.pending.to>=s.players.length))throw new Error('Invalid reaction');
     return s;
   }
-  return {catalog:C,byId:BY,money:money,def:def,value:value,sum:sum,create:create,nextRound:nextRound,act:act,legal:legal,bot:bot,seat:currentSeat,restore:restore};
+  return {redraw:redraw,catalog:C,byId:BY,money:money,def:def,value:value,sum:sum,create:create,nextRound:nextRound,act:act,legal:legal,bot:bot,seat:currentSeat,restore:restore};
 }));
+
+// AFTER_HOURS_ENGINE_030

@@ -3,11 +3,11 @@ android {
     namespace = "uk.co.hotbox.cardgame"
     compileSdk = 35
     defaultConfig {
-        applicationId = "uk.co.hotbox.cardgame"
+        applicationId = "uk.co.hotbox.afterhours"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20
-        versionName = "0.2.0"
+        versionCode = 30
+        versionName = "0.3.0"
         testInstrumentationRunner = "uk.co.hotbox.cardgame.HotBoxSmoke"
     }
     compileOptions {
