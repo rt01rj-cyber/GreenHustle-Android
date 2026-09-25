@@ -1,0 +1,148 @@
+name: Hot Box Casefile 0.5 validation
+on:
+  push:
+    branches: [feature/casefile-05]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: casefile-05-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Recover checksum-verified reviewed patch files
+        shell: python
+        run: |
+          from pathlib import Path
+          import base64, hashlib, lzma, json
+          encoded = ''.join(Path('revision05/transport-%d.b64' % i).read_text().strip() for i in range(2))
+          data = base64.b64decode(encoded, validate=True)
+          assert hashlib.sha256(data).hexdigest() == '10e3fab2a24b9da6eb6320330097e7753c910470bc144639d1ac1c1414f898b0', 'Transport checksum mismatch'
+          files = json.loads(lzma.decompress(data))
+          for name, content in files.items():
+              p = Path(name)
+              assert not p.is_absolute() and '..' not in p.parts and p.parts[0] == 'revision05'
+              assert isinstance(content, str)
+              p.parent.mkdir(parents=True, exist_ok=True)
+              p.write_text(content)
+          print('Recovered', len(files), 'reviewed patch files')
+      - name: Apply exact-source revision
+        run: python3 revision05/prepare.py
+      - name: Verify prepared output matches tested files
+        shell: python
+        run: |
+          from pathlib import Path
+          import json, hashlib
+          hashes = json.loads(Path('revision05/output-sha256.json').read_text())
+          for path, expected in hashes.items():
+              actual = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+              assert actual == expected, path + ' differs from reviewed source'
+          print('Verified', len(hashes), 'prepared source files')
+      - name: Classic rules and complete-match regressions
+        run: |
+          mkdir -p evidence
+          node tests/engine.test.js | tee evidence/classic-rules.txt
+          node tests/simulate.js | tee evidence/classic-simulations.txt
+      - name: Contested missions, economy and AI benchmark
+        run: node revision05/test.js | tee evidence/casefile-regressions.txt
+      - name: Verify bundled artwork
+        run: python3 scripts/check_assets.py
+      - name: Android SDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Compile application and native instrumentation
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+      - name: Verify signature and collect exact source
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/HotBox-0.5.0.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk out/HotBox-0.5.0-tests.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs out/HotBox-0.5.0.apk | tee evidence/apk-signature.txt
+          sha256sum out/HotBox-0.5.0.apk > out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile
+          with zipfile.ZipFile('out/HotBox-0.5.0-source.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+              for folder in ['app/src', 'revision05', 'tests', 'scripts']:
+                  for p in Path(folder).rglob('*'):
+                      if p.is_file() and '__pycache__' not in p.parts and p.suffix not in ['.ttf','.otf','.jks','.keystore','.b64']:
+                          z.write(p)
+              for name in ['README.md','settings.gradle.kts','build.gradle.kts','gradle.properties','app/build.gradle.kts','.github/workflows/casefile-05.yml']:
+                  z.write(name)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HotBox-0.5.0-build
+          path: out/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HotBox-0.5.0-build-evidence
+          path: evidence/
+  android-smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [29, 35]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-0.5.0-build
+          path: out
+      - name: Prepare installed-APK smoke test
+        run: |
+          cat > "$RUNNER_TEMP/hotbox-smoke.sh" <<'SH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          mkdir -p evidence
+          adb install -r out/HotBox-0.5.0.apk
+          adb install -r out/HotBox-0.5.0-tests.apk
+          adb logcat -c
+          adb shell am instrument -w uk.co.hotbox.cymra.test/uk.co.hotbox.cardgame.HotBoxSmoke | tee evidence/native-smoke.txt
+          adb logcat -d > evidence/logcat.txt
+          adb shell am force-stop uk.co.hotbox.cymra
+          adb shell am start -W -n uk.co.hotbox.cymra/uk.co.hotbox.cardgame.MainActivity
+          sleep 10
+          adb exec-out screencap -p > evidence/cold-start.png
+          grep -q 'HOTBOX_SMOKE:PASS' evidence/native-smoke.txt
+          ! grep -q 'HOTBOX_SMOKE:FAIL' evidence/native-smoke.txt
+          SH
+      - name: Enable runner emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash "$RUNNER_TEMP/hotbox-smoke.sh"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HotBox-0.5.0-android-${{ matrix.api }}-evidence
+          path: evidence/
+          if-no-files-found: warn
