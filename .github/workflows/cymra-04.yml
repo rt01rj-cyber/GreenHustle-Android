@@ -1,0 +1,133 @@
+name: Hot Box Cymra 0.4 verified APK
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['update04/**', '.github/workflows/cymra-04.yml']
+permissions:
+  contents: read
+concurrency:
+  group: cymra-04-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Prepare checksum-verified source and artwork
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 update04/build_from_blobs.py
+      - name: Rules and full campaign regression tests
+        run: |
+          mkdir -p evidence
+          node tests/engine.test.js | tee evidence/rules.txt
+          node tests/simulate.js | tee evidence/classic.txt
+          node tests/cymra.test.js | tee evidence/campaign.txt
+          python3 scripts/check_assets.py
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Compile app and native tests
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+      - name: Verify and package
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/debug/app-debug.apk out/HotBox-0.4.0.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk out/HotBox-0.4.0-tests.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs out/HotBox-0.4.0.apk > out/signature.txt
+          sha256sum out/HotBox-0.4.0.apk > out/SHA256SUMS.txt
+          cp evidence/*.txt out/
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          ignored={'.git','.gradle','build','out','evidence','__pycache__','.idea'}
+          with ZipFile('out/HotBox-0.4.0-source.zip','w',ZIP_DEFLATED) as archive:
+              for path in sorted(Path('.').rglob('*')):
+                  if path.is_file() and not any(p in ignored for p in path.parts) and path.suffix not in {'.jks','.keystore','.ttf','.otf'} and path.name!='local.properties':
+                      archive.write(path,'HotBox-0.4.0/'+path.as_posix())
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.0-build
+          path: out/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: HotBox-Cymra-0.4.0-build-errors
+          path: evidence/
+          if-no-files-found: warn
+  native:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [29, 35]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare same verified test scripts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 update04/build_from_blobs.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.0-build
+          path: out
+      - name: Enable hosted emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HotBox-Cymra-0.4.0-Android-${{ matrix.api }}-evidence
+          path: evidence/
+          if-no-files-found: warn
+  publish:
+    needs: [build, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Expand tested readable source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 update04/build_from_blobs.py
+      - name: Preserve readable tested modules
+        run: |
+          git fetch origin main
+          if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then exit 0; fi
+          git config user.name 'Hot Box Build'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app tests scripts/smoke.sh README.md
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Publish emulator-tested Cymra 0.4 source [skip ci]'
+          git push origin HEAD:main
