@@ -1,4 +1,4 @@
-name: Build and test Hot Box APK
+name: Build and test Hot Box After Hours
 on:
   workflow_dispatch:
   push:
@@ -21,8 +21,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Game rules and 1000 complete matches
-        run: node tests/engine.test.js && node tests/simulate.js
+      - name: Verify and prepare After Hours source
+        run: python3 expansion/unpack.py
+      - name: Classic and campaign tests
+        run: |
+          mkdir -p evidence
+          node tests/engine.test.js | tee evidence/classic-tests.txt
+          node tests/simulate.js | tee evidence/classic-simulations.txt
+          node expansion/tests/campaign.test.js | tee evidence/campaign-tests.txt
       - name: Check bundled artwork
         run: python3 scripts/check_assets.py
       - name: Android SDK packages
@@ -37,15 +43,35 @@ jobs:
       - name: Verify signature and collect APKs
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/debug/app-debug.apk out/HotBox-0.2.0.apk
-          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk out/HotBox-0.2.0-tests.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose out/HotBox-0.2.0.apk
-          sha256sum out/HotBox-0.2.0.apk > out/SHA256SUMS.txt
+          cp app/build/outputs/apk/debug/app-debug.apk out/HotBox-0.3.0.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk out/HotBox-0.3.0-tests.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs out/HotBox-0.3.0.apk > out/signature.txt
+          sha256sum out/HotBox-0.3.0.apk > out/SHA256SUMS.txt
+          cp evidence/*.txt out/
+      - name: Package the exact source used by this build
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+          root = Path('.')
+          excluded = {'.git','.gradle','build','out','evidence','__pycache__','.idea'}
+          with ZipFile('out/HotBox-0.3.0-source.zip','w',ZIP_DEFLATED) as z:
+              for p in sorted(root.rglob('*')):
+                  if not p.is_file() or any(x in excluded for x in p.parts): continue
+                  if p.suffix in {'.keystore','.jks','.ttf','.otf'} or p.name=='local.properties': continue
+                  z.write(p,'HotBox-0.3.0/'+p.as_posix())
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: HotBox-0.2.0-build
+          name: HotBox-0.3.0-build
           path: out/
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: HotBox-0.3.0-build-evidence
+          path: evidence/
+          if-no-files-found: warn
   android-smoke:
     needs: build
     runs-on: ubuntu-latest
@@ -56,9 +82,11 @@ jobs:
         api: [29, 35]
     steps:
       - uses: actions/checkout@v4
+      - name: Prepare test scripts
+        run: python3 expansion/unpack.py
       - uses: actions/download-artifact@v4
         with:
-          name: HotBox-0.2.0-build
+          name: HotBox-0.3.0-build
           path: out
       - name: Enable emulator acceleration
         run: |
@@ -77,6 +105,32 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: HotBox-android-${{ matrix.api }}-test-evidence
+          name: HotBox-0.3.0-android-${{ matrix.api }}-evidence
           path: evidence/
           if-no-files-found: warn
+  publish-source:
+    needs: [build, android-smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - name: Expand the verified source
+        run: python3 expansion/unpack.py
+      - name: Publish tested readable modules without overwriting concurrent changes
+        run: |
+          git fetch origin main
+          if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
+            echo 'Main changed during testing. Keeping the source artifact; not pushing.'
+            exit 0
+          fi
+          git config user.name 'Hot Box Build'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm --ignore-unmatch expansion/transport-0.bin expansion/transport-1.bin expansion/transport-2.bin
+          git add app expansion README.md scripts/smoke.sh
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m 'Publish tested After Hours 0.3 source [skip ci]'
+          git push origin HEAD:main
