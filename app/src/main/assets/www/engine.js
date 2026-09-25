@@ -16,7 +16,7 @@
     ['taxed','Taxed','hassle',0,7,'taxed','Steal a random product from a rival’s hidden hand. No eligible product? You get nothing.','Not the HMRC sort.'],
     ['fake','Fake Batch','hassle',0,5,'fake','Halve a rival’s next banked product. Does not stack.','Five-star packaging. One-star contents.'],
     ['raid','Raid','hassle',0,4,'raid','Block a rival’s selling and banking for their next two turns. They may still draw and act.','Nobody ordered this takeaway.'],
-    ['nocomment','No Comment','counter',0,7,'solicitor','React to cancel Section 60 or Raid. Also clears your own Raid when played on your turn.','My client has nothing to add.'],
+    ['nocomment','No Comment','counter',0,7,'nocomment','React to cancel Section 60 or Raid. Also clears your own Raid when played on your turn.','My client has nothing to add.'],
     ['solicitor','Good Solicitor','counter',0,7,'solicitor','On your turn, clear your Raid and Fake Batch.','Billable hours. Unbillable attitude.'],
     ['dash','Dash It','counter',0,6,'dash','React: discard this and a product from your hand to cancel a police hit.','A tactical change of ownership.'],
     ['raptor','Operation Raptor','event',0,1,'raptor','Ends the round immediately. Only banked cash survives.','It was only a matter of time.']
@@ -52,15 +52,15 @@
     s.deck.splice(at,0,{id:'raptor',uid:s.round+'-raptor-0'});
     s.initialDeck=s.deck.length;s.phase='draw';event(s,'round','Round '+s.round+'. Build your stash. Bank before the raid.');return {ok:true};
   }
-  function roundEnd(s) {
+  function roundEnd(s,cleared) {
     if(s.phase==='round'||s.phase==='over')return;
     s.results=s.players.map(function(p,i){var lost=sum(p.stash)+sum(p.hand);var r={seat:i,name:p.name,banked:p.roundBank,total:p.bank,lost:lost};s.discard.push.apply(s.discard,p.stash.concat(p.hand));p.stash=[];p.hand=[];p.line=0;p.raid=0;p.fake=false;return r;});
     s.phase=s.round>=s.rounds?'over':'round';s.pending=null;
     var best=Math.max.apply(null,s.players.map(function(p){return p.bank;}));
     s.winners=s.players.map(function(p,i){return p.bank===best?i:-1;}).filter(function(i){return i>=0;});
-    event(s,'raptor','OPERATION RAPTOR. Unbanked products are gone.','raptor');
+    if(cleared){s.clearReason='target';event(s,'clear','TARGET SECURED. '+s.players[0].name+' has completed the encounter.',null,0);}else{event(s,'raptor','OPERATION RAPTOR. Unbanked products are gone.','raptor');}
   }
-  function advance(s) { var p=s.players[s.current];if(p.raid>0)p.raid--;s.current=(s.current+1)%s.players.length;s.turn++;s.phase='draw'; }
+  function advance(s) { if(checkVictory(s))return; var p=s.players[s.current];if(s.campaign&&p.hand.length>7){s.phase='trim';s.trimNext='advance';return;}if(p.raid>0)p.raid--;s.current=(s.current+1)%s.players.length;s.turn++;s.phase='draw'; }
   function reactions(s) {
     if(!s.pending)return [];
     var p=s.players[s.pending.to],out=[{type:'accept'}];
@@ -84,6 +84,7 @@
   function legal(s,seat) {
     if(seat!==currentSeat(s))return [];
     if(s.phase==='react')return reactions(s);
+    if(s.phase==='trim')return s.players[seat].hand.map(function(c){return {type:'trim',uid:c.uid};});
     if(s.phase==='draw')return [{type:'draw'}];
     if(s.phase!=='act')return [];
     var p=s.players[seat],out=[];
@@ -106,9 +107,10 @@
     return out;
   }
   function equivalent(a,b) { return ['type','uid','target','card','sacrifice'].every(function(k){return a[k]===b[k];}); }
-  function act(s,seat,a) {
+  function actBase(s,seat,a) {
     if(!a||!legal(s,seat).some(function(b){return equivalent(a,b);}))return {ok:false,error:'That move is not available now.'};
     var p=s.players[seat],c,d;
+    if(a.type==='trim'){c=p.hand.splice(p.hand.findIndex(function(x){return x.uid===a.uid;}),1)[0];s.discard.push(c);if(p.hand.length<=7){var next=s.trimNext;s.trimNext=null;if(next==='advance')advance(s);else s.phase='act';}return {ok:true};}
     if(a.type==='draw'){
       c=s.deck.shift();
       if(!c||c.id==='raptor'){if(c)s.discard.push(c);roundEnd(s);return {ok:true};}
@@ -161,6 +163,7 @@
   function bot(s) {
     var seat=currentSeat(s),p=s.players[seat],opts=legal(s,seat);
     if(!opts.length)return null;
+    if(s.phase==='trim'){opts.sort(function(a,b){return value(p.hand.find(function(c){return c.uid===a.uid;}))-value(p.hand.find(function(c){return c.uid===b.uid;}));});return opts[0];}
     if(s.phase==='draw')return opts[0];
     if(s.phase==='react'){
       var nc=opts.find(function(a){return a.card==='nocomment';});
@@ -196,6 +199,16 @@
     });
     scored.sort(function(a,b){return b.score-a.score;});return scored[0].action;
   }
+  function checkVictory(s){
+    if(!s.campaign||s.phase==='over'||s.phase==='round'||s.players[0].bank<s.campaign.target)return false;
+    if(s.pending){s.discard.push(s.pending.card);s.pending=null;}
+    s.trimNext=null;roundEnd(s,true);return true;
+  }
+  function act(s,seat,a){
+    var result=actBase(s,seat,a);
+    if(result.ok&&!checkVictory(s)&&s.campaign&&s.phase==='act'&&s.players[s.current].hand.length>7){s.phase='trim';s.trimNext='act';}
+    return result;
+  }
   function redraw(s,seat,uids){
     if(s.phase!=='act'||s.current!==seat||!Array.isArray(uids)||uids.length<1||uids.length>2||new Set(uids).size!==uids.length)return {ok:false,error:'Choose one or two different hand cards, after drawing.'};
     var p=s.players[seat];if(uids.some(function(uid){return !p.hand.some(function(c){return c.uid===uid;});}))return {ok:false,error:'That card is not in your hand.'};
@@ -205,14 +218,14 @@
   }
   function restore(raw) {
     var s=typeof raw==='string'?JSON.parse(raw):raw;
-    if(!s||s.version!==2||!Array.isArray(s.players)||s.players.length<2||s.players.length>6||!Array.isArray(s.deck)||!Array.isArray(s.discard)||!Number.isInteger(s.current)||s.current<0||s.current>=s.players.length||['draw','act','react','round','over'].indexOf(s.phase)<0)throw new Error('Incompatible save');
+    if(!s||s.version!==2||!Array.isArray(s.players)||s.players.length<2||s.players.length>6||!Array.isArray(s.deck)||!Array.isArray(s.discard)||!Number.isInteger(s.current)||s.current<0||s.current>=s.players.length||['draw','act','react','round','over','trim'].indexOf(s.phase)<0)throw new Error('Incompatible save');
     s.players.forEach(function(p){if(!Array.isArray(p.hand)||!Array.isArray(p.stash)||!Number.isFinite(p.bank)||p.bank<0)throw new Error('Invalid player');});
     var cards=s.deck.concat(s.discard);s.players.forEach(function(p){cards=cards.concat(p.hand,p.stash);});if(s.pending)cards.push(s.pending.card);
     if(cards.some(function(c){return !c||!BY[c.id]||typeof c.uid!=='string';})||new Set(cards.map(function(c){return c.uid;})).size!==cards.length)throw new Error('Invalid deck');
     if(s.phase==='react'&&(!s.pending||!Number.isInteger(s.pending.to)||s.pending.to<0||s.pending.to>=s.players.length))throw new Error('Invalid reaction');
     return s;
   }
-  return {redraw:redraw,catalog:C,byId:BY,money:money,def:def,value:value,sum:sum,create:create,nextRound:nextRound,act:act,legal:legal,bot:bot,seat:currentSeat,restore:restore};
+  return {checkVictory:checkVictory,redraw:redraw,catalog:C,byId:BY,money:money,def:def,value:value,sum:sum,create:create,nextRound:nextRound,act:act,legal:legal,bot:bot,seat:currentSeat,restore:restore};
 }));
 
 // AFTER_HOURS_ENGINE_030

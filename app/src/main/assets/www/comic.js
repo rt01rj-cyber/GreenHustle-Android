@@ -1,0 +1,4 @@
+/* Illustrated scenes from the user's approved Cymra concept. Text/values render separately. */
+(function(){var tiles={"logo":[0,0],"riz":[1,0],"caz":[2,0],"geth":[3,0],"phone":[4,0],"car":[0,1],"nocomment":[1,1],"solicitor":[2,1],"police":[3,1],"taxed":[4,1],"dash":[0,2],"grow":[1,2],"cali":[2,2],"raptor":[3,2],"arcade":[4,2],"cwtch":[0,3],"sippy":[1,3],"dock":[2,3],"services":[3,3],"ferry":[4,3],"eireannach":[0,4],"director":[1,4],"raid":[2,4],"nerys":[3,4],"night":[4,4]},alias={you:'riz',fake:'cali',dockjaw:'geth'};
+window.HotBoxComic={has:function(n){return !!tiles[n]||!!tiles[alias[n]];},draw:function(n,extra){var t=tiles[n]||tiles[alias[n]],pos=(t[0]*25)+'% '+(t[1]*25)+'%';return '<div class="art comic '+(extra||'')+'" data-scene="'+n+'" style="background-position:'+pos+'">'+(n==='fake'?'<b class="fake-stamp">FAKE</b>':'')+'</div>';}};
+}());

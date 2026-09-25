@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 mkdir -p evidence
-adb install -r out/HotBox-0.3.0.apk
-adb install -r out/HotBox-0.3.0-tests.apk
+adb install -r out/HotBox-0.4.0.apk
+adb install -r out/HotBox-0.4.0-tests.apk
 adb logcat -c
-adb shell am instrument -w uk.co.hotbox.afterhours.test/uk.co.hotbox.cardgame.HotBoxSmoke | tee evidence/native-smoke.txt
+adb shell am instrument -w uk.co.hotbox.cymra.test/uk.co.hotbox.cardgame.HotBoxSmoke | tee evidence/native-smoke.txt
 adb logcat -d > evidence/logcat.txt
 grep -q 'HOTBOX_SMOKE:PASS' evidence/native-smoke.txt
 ! grep -q 'HOTBOX_SMOKE:FAIL' evidence/native-smoke.txt
 # Verify a normal cold start separately from the instrumentation process.
 adb shell input keyevent 224
 adb shell wm dismiss-keyguard || true
-adb shell am force-stop uk.co.hotbox.afterhours
+adb shell am force-stop uk.co.hotbox.cymra
 adb logcat -c
-adb shell am start -W -n uk.co.hotbox.afterhours/uk.co.hotbox.cardgame.MainActivity
+adb shell am start -W -n uk.co.hotbox.cymra/uk.co.hotbox.cardgame.MainActivity
 ready=0
 for attempt in $(seq 1 45); do
   adb logcat -d > evidence/cold-start-logcat.txt

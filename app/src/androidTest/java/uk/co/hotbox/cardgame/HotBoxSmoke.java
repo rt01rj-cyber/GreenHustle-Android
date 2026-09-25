@@ -46,7 +46,7 @@ public class HotBoxSmoke extends Instrumentation {
             activity = (MainActivity) startActivitySync(intent);
             awaitPage();
             check("!!window.HotBoxUI && document.body.dataset.ready==='1'", "Launch and JavaScript boot");
-            js("window.__atlasOK=false;var art=new Image();art.onload=function(){window.__atlasOK=art.naturalWidth>=512;};art.src='https://hotbox.local/art/atlas.webp';");
+            js("window.__atlasOK=false;var art=new Image();art.onload=function(){window.__atlasOK=art.naturalWidth>=512;};art.src='https://hotbox.local/art/cymra.webp';");
             check("window.__atlasOK===true", "Bundled WebP artwork");
             js("localStorage.removeItem('hotbox-save-v2'); document.querySelector('[data-do=start]').click()");
             check("!!document.querySelector('.table') && HotBoxUI.state().phase==='draw'", "Start solo table");
@@ -66,7 +66,7 @@ public class HotBoxSmoke extends Instrumentation {
             awaitPage();
             check("!!document.querySelector('[data-do=continue]')", "Save persists across Activity recreation");
             // AFTER_HOURS_NATIVE_030
-            js("localStorage.removeItem('hotbox-afterhours-v3'); document.querySelector('[data-ah=heroes]').click()");
+            js("localStorage.removeItem('hotbox-cymra-v4'); document.querySelector('[data-ah=heroes]').click()");
             check("document.querySelectorAll('.hero-select').length===3", "Three campaign characters");
             js("document.querySelector('[data-hero=riz]').click(); document.querySelector('[data-ah=intro]').click()");
             check("!!document.querySelector('.story-frame')", "Story and goal briefing");
@@ -93,7 +93,29 @@ public class HotBoxSmoke extends Instrumentation {
             js("document.querySelector('[data-ah=continue]').click()");
             check("AHUI.run().hero==='riz' && HotBoxUI.state().players[0].skillUsed && HotBoxUI.state().phase==='act'", "Campaign restores exact turn and used ability");
 
-            result.putString("stream", "\nHOTBOX_SMOKE:PASS — classic + story: launch, draw, inspect, Riz skill, separate saves, recreate, insets\n");
+
+            check("AfterHours.tables.length===8 && document.querySelector('.campaign-hud').textContent.includes('1/8')", "Eight-table Cymra campaign");
+            js("var s=HotBoxShell.get(),p=s.players[0];p.bank=35000;p.roundBank=35000;p.line=1;s.current=0;s.phase='act';var i=s.deck.findIndex(c=>c.id==='baggie');var c=s.deck.splice(i,1)[0];p.stash.push(c);HotBoxShell.perform({type:'bank',uid:c.uid});");
+            check("AHUI.run().stage==='result' && AHUI.run().outcome.success && HotBoxUI.state().clearReason==='target'", "Target clears immediately without waiting for Raptor");
+            js("document.querySelector('[data-ah=result-next]').click()");
+            check("AHUI.run().stage==='shop' && AHUI.run().wallet===40000 && AHUI.run().score===40000", "Clear to shop and exact-once rewards");
+            js("var buy=document.querySelector('[data-ah=buy]:not([disabled])');window.__price=AfterHours.items[buy.dataset.item].cost;buy.click()");
+            check("AHUI.run().wallet===40000-window.__price && AHUI.run().score===40000", "Purchase spends wallet without reducing run score");
+            js("document.querySelector('[data-ah=leave]').click();document.querySelector('[data-ah=intro]').click();document.querySelector('[data-ah=launch]').click()");
+            check("AHUI.run().node===1 && HotBoxUI.state().campaign.target===65000", "Next real encounter launches");
+            js("var s=HotBoxShell.get(),p=s.players[0];function take(id){return s.deck.splice(s.deck.findIndex(c=>c.id===id),1)[0];}p.hand.push(take('dash'),take('baggie'));s.current=1;s.phase='act';var raid=take('raid');s.players[1].hand.push(raid);HotBox.act(s,1,{type:'play',uid:raid.uid,target:0});HotBoxShell.rerender();");
+            check("!!document.querySelector('.reaction-summary') && document.querySelectorAll('.sheet-actions button').length===3", "Compact three-choice reaction");
+            js("document.querySelector('[data-do=dashpick]').click()");
+            check("document.querySelectorAll('.sacrifice').length<=4 && document.querySelectorAll('.sacrifice').length>0", "Duplicate sacrifices are grouped by product");
+            js("document.querySelector('.sacrifice').click()");
+            check("!HotBoxUI.state().pending && HotBoxUI.state().players[0].raid===0", "Dash It cancels police hit");
+            js("var s=HotBoxShell.get(),p=s.players[0];while(p.hand.length<8){var i=s.deck.findIndex(c=>c.id!=='raptor');p.hand.push(s.deck.splice(i,1)[0]);}while(p.hand.length>8)s.discard.push(p.hand.pop());s.current=0;s.phase='trim';s.trimNext='act';HotBoxShell.rerender();");
+            check("document.getElementById('overlay').textContent.includes('Story hand limit: 7')", "Explicit Story hand-limit picker");
+            js("document.querySelector('.sacrifice').click()");
+            check("HotBoxUI.state().players[0].hand.length===7 && HotBoxUI.state().phase==='act'", "Trimming preserves the main action");
+            check("Array.from(document.querySelectorAll('.card .comic')).length>0", "Comic artwork integrated into playable cards");
+            check("document.documentElement.scrollWidth<=window.innerWidth+1", "No horizontal page overflow");
+            result.putString("stream", "\nHOTBOX_SMOKE:PASS — Cymra 0.4: launch, art, classic, story, saves, insets, immediate clear, shop, reactions, trim\n");
             finish(Activity.RESULT_OK,result);
         } catch(Throwable ex) {
             result.putString("stream", "\nHOTBOX_SMOKE:FAIL " + stage + ": " + ex.toString()+"\n");
