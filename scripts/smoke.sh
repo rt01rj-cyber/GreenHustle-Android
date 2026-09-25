@@ -6,8 +6,53 @@ adb install -r out/HotBox-0.3.0-tests.apk
 adb logcat -c
 adb shell am instrument -w uk.co.hotbox.afterhours.test/uk.co.hotbox.cardgame.HotBoxSmoke | tee evidence/native-smoke.txt
 adb logcat -d > evidence/logcat.txt
-adb shell am start -W -n uk.co.hotbox.afterhours/uk.co.hotbox.cardgame.MainActivity
-sleep 3
-adb exec-out screencap -p > evidence/android-launch.png
 grep -q 'HOTBOX_SMOKE:PASS' evidence/native-smoke.txt
 ! grep -q 'HOTBOX_SMOKE:FAIL' evidence/native-smoke.txt
+# A cold-start render can take longer than three seconds on a software-GPU emulator.
+# Require the fresh app's actual ready message, not an arbitrary early screenshot.
+adb shell am force-stop uk.co.hotbox.afterhours
+adb logcat -c
+adb shell am start -W -n uk.co.hotbox.afterhours/uk.co.hotbox.cardgame.MainActivity
+ready=0
+for attempt in $(seq 1 45); do
+  adb logcat -d > evidence/cold-start-logcat.txt
+  if grep -q 'HOTBOX_WEB_READY' evidence/cold-start-logcat.txt; then ready=1; break; fi
+  sleep 1
+done
+if [ "$ready" != 1 ]; then echo 'Cold launch never reached game readiness'; exit 1; fi
+sleep 3
+adb shell uiautomator dump /sdcard/hotbox-window.xml
+adb pull /sdcard/hotbox-window.xml evidence/cold-menu.xml
+adb exec-out screencap -p > evidence/android-launch.png
+python3 - <<'PY'
+from pathlib import Path
+import xml.etree.ElementTree as ET
+import re
+root=ET.parse('evidence/cold-menu.xml').getroot()
+texts=' '.join(n.attrib.get('text','')+' '+n.attrib.get('content-desc','') for n in root.iter('node'))
+assert 'AFTER HOURS' in texts or 'START A STORY RUN' in texts, 'Cold start did not display the campaign menu'
+for n in root.iter('node'):
+    label=n.attrib.get('text','')+' '+n.attrib.get('content-desc','')
+    if 'Continue Riz' not in label: continue
+    box=list(map(int,re.findall(r'\d+',n.attrib.get('bounds',''))))
+    if len(box)==4 and box[2]>box[0] and box[3]>box[1]:
+        Path('evidence/resume-tap.txt').write_text('%d %d' % ((box[0]+box[2])//2,(box[1]+box[3])//2))
+        break
+else:
+    raise AssertionError('Saved campaign continue button was not visible')
+print('HOTBOX_COLD_MENU:PASS')
+PY
+read -r tap_x tap_y < evidence/resume-tap.txt || true
+adb shell input tap "$tap_x" "$tap_y"
+sleep 3
+adb shell uiautomator dump /sdcard/hotbox-window.xml
+adb pull /sdcard/hotbox-window.xml evidence/restored-table.xml
+adb exec-out screencap -p > evidence/android-story-table.png
+python3 - <<'PY'
+import xml.etree.ElementTree as ET
+root=ET.parse('evidence/restored-table.xml').getroot()
+texts=' '.join(n.attrib.get('text','')+' '+n.attrib.get('content-desc','') for n in root.iter('node'))
+assert 'The Cwtch' in texts and 'YOUR HAND' in texts, 'Cold-start campaign resume did not display the table'
+print('HOTBOX_VISIBLE_STORY:PASS')
+PY
+printf 'HOTBOX_COLD_MENU:PASS\nHOTBOX_VISIBLE_STORY:PASS\n' > evidence/cold-start-result.txt
