@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no" />
+  <meta name="theme-color" content="#13251a" />
+  <title>Green Hustle</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main id="app">
+    <section id="menuScreen" class="screen menu-screen">
+      <div class="sunburst"></div>
+      <div class="menu-card">
+        <div class="eyebrow">AN ORIGINAL TAKE-THAT CARD GAME</div>
+        <h1>GREEN<br><span>HUSTLE</span></h1>
+        <p class="strap">Open a pitch. Build your stock. Protect the good stuff. Put pressure on everyone else.</p>
+
+        <div class="setup-grid">
+          <label>Winning total
+            <select id="targetSelect">
+              <option value="150000">Quick · £150k</option>
+              <option value="300000" selected>Standard · £300k</option>
+              <option value="500000">Epic · £500k</option>
+            </select>
+          </label>
+          <label>AI style
+            <select id="difficultySelect">
+              <option value="casual">Casual</option>
+              <option value="sharp" selected>Sharp</option>
+              <option value="ruthless">Ruthless</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="mode-card">
+          <div><strong>Solo vs AI</strong><small>Play offline against computer rivals.</small></div>
+          <select id="aiCount" aria-label="Number of AI rivals">
+            <option value="1">1 rival</option><option value="2" selected>2 rivals</option><option value="3">3 rivals</option><option value="4">4 rivals</option><option value="5">5 rivals</option>
+          </select>
+          <button id="soloBtn" class="primary">Start solo game</button>
+        </div>
+
+        <div class="mode-card">
+          <div><strong>Pass & Play</strong><small>Share one phone or tablet. Hands stay hidden between turns.</small></div>
+          <select id="localCount" aria-label="Number of local players">
+            <option value="2" selected>2 players</option><option value="3">3 players</option><option value="4">4 players</option><option value="5">5 players</option><option value="6">6 players</option>
+          </select>
+          <button id="localBtn" class="secondary">Start local game</button>
+        </div>
+
+        <button id="continueBtn" class="ghost hidden">Continue saved game</button>
+        <button id="rulesBtn" class="text-btn">How to play</button>
+        <div class="version">Prototype v0.1 · offline</div>
+      </div>
+    </section>
+
+    <section id="gameScreen" class="screen game-screen hidden">
+      <header class="topbar">
+        <button id="homeBtn" class="icon-btn" aria-label="Menu">☰</button>
+        <div class="brand-mini">GREEN <b>HUSTLE</b></div>
+        <div class="top-stats"><span id="roundLabel"></span><span id="deckLabel"></span><span id="targetLabel"></span></div>
+      </header>
+
+      <div id="scoreStrip" class="score-strip"></div>
+
+      <section class="table-area">
+        <div class="turn-banner">
+          <span id="turnName"></span>
+          <small id="turnHint"></small>
+        </div>
+        <div id="statusChips" class="status-chips"></div>
+        <div id="marketArea" class="market-area"></div>
+      </section>
+
+      <section class="log-panel">
+        <div class="log-title">TABLE TALK</div>
+        <div id="gameLog" class="game-log"></div>
+      </section>
+
+      <section class="hand-panel">
+        <div class="hand-head">
+          <div><span id="handOwner">Your hand</span><small id="handSub"></small></div>
+          <button id="drawBtn" class="primary compact">Draw</button>
+        </div>
+        <div id="hand" class="hand"></div>
+        <div id="cardAction" class="card-action hidden"></div>
+      </section>
+    </section>
+  </main>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true"><div id="modalCard" class="modal-card"></div></div>
+  <div id="passOverlay" class="pass-overlay hidden"><div><div class="pass-icon">🙈</div><h2 id="passTitle">Pass the device</h2><p id="passText"></p><button id="revealBtn" class="primary">Reveal hand</button></div></div>
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
