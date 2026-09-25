@@ -49,6 +49,8 @@ jobs:
               actual = hashlib.sha256(Path(path).read_bytes()).hexdigest()
               assert actual == expected, path + ' differs from reviewed source'
           print('Verified', len(hashes), 'prepared source files')
+      - name: Bundle offline startup and isolate save slots
+        run: python3 revision05/package_boot.py
       - name: Classic rules and complete-match regressions
         run: |
           mkdir -p evidence
@@ -121,8 +123,9 @@ jobs:
           adb logcat -d > evidence/logcat.txt
           adb shell am force-stop uk.co.hotbox.cymra
           adb shell am start -W -n uk.co.hotbox.cymra/uk.co.hotbox.cardgame.MainActivity
-          sleep 10
+          sleep 15
           adb exec-out screencap -p > evidence/cold-start.png
+          adb logcat -d > evidence/cold-start-logcat.txt
           grep -q 'HOTBOX_SMOKE:PASS' evidence/native-smoke.txt
           ! grep -q 'HOTBOX_SMOKE:FAIL' evidence/native-smoke.txt
           SH
