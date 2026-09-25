@@ -1,23 +1,18 @@
-plugins {
-    id("com.android.application")
-}
-
+plugins { id("com.android.application") }
 android {
-    namespace = "uk.co.greenhustle.cardgame"
+    namespace = "uk.co.hotbox.cardgame"
     compileSdk = 35
-
     defaultConfig {
-        applicationId = "uk.co.greenhustle.cardgame"
+        applicationId = "uk.co.hotbox.cardgame"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 20
+        versionName = "0.2.0"
+        testInstrumentationRunner = "uk.co.hotbox.cardgame.HotBoxSmoke"
     }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-        }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
+    buildTypes { release { isMinifyEnabled = false } }
 }

@@ -1,25 +1,19 @@
-const E = require('../app/src/main/assets/www/engine.js');
-let games=0, rounds=0, maxTurns=0;
-for(let g=0; g<100; g++){
-  const s=E.newGame({mode:'solo',players:4,target:300000,difficulty:['casual','sharp','ruthless'][g%3]});
-  s.players.forEach(p=>p.isHuman=false);
-  let steps=0;
-  while(!s.gameOver && steps<5000){
-    if(s.roundEnded){ rounds++; E.nextRound(s); continue; }
-    const idx=s.currentPlayer;
-    const d=E.draw(s,idx);
-    if(s.roundEnded) continue;
-    if(!d.ok && !s.drawn){ throw new Error('draw stalled '+d.message); }
-    const m=E.chooseAiMove(s,idx);
-    if(!m) throw new Error('no AI move');
-    const r=m.discard?E.discardCard(s,idx,m.handIndex):E.playCard(s,idx,m.handIndex,m.targetIndex);
-    if(!r.ok){
-      const fallback=E.discardCard(s,idx,0);
-      if(!fallback.ok) throw new Error('play and fallback failed: '+r.message+' / '+fallback.message);
-    }
-    steps++;
-  }
-  if(!s.gameOver) throw new Error('simulation did not finish');
-  maxTurns=Math.max(maxTurns,steps); games++;
+'use strict';
+const assert=require('node:assert/strict');
+const E=require('../app/src/main/assets/www/engine.js');
+let maxSteps=0, banks=0,counters=0;
+for(let i=0;i<1000;i++){
+ const s=E.create({players:2+i%5,rounds:[3,5,7][i%3],difficulty:['casual','sharp','ruthless'][i%3],seed:i+10});
+ let steps=0;
+ while(s.phase!=='over'&&steps<5000){
+  if(s.phase==='round'){assert(E.nextRound(s).ok);continue;}
+  const a=E.bot(s);assert(a,'AI stalled');
+  assert(E.act(s,E.seat(s),a).ok,'AI made an invalid move');
+  const all=s.deck.concat(s.discard,...s.players.flatMap(p=>[p.hand,p.stash]),s.pending?[s.pending.card]:[]);
+  assert.equal(all.length,101,'Card conservation');assert.equal(new Set(all.map(c=>c.uid)).size,101,'Duplicate cards');
+  steps++;
+ }
+ assert.equal(s.phase,'over');maxSteps=Math.max(maxSteps,steps);banks+=s.stats.banks;counters+=s.stats.counters;
+ if(i%100===0)E.restore(JSON.stringify(s));
 }
-console.log({games,rounds,maxTurns});
+console.log(JSON.stringify({games:1000,maxSteps,banks,counters,stalls:0}));

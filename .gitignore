@@ -1,8 +1,12 @@
 .gradle/
+build/
+app/build/
 .idea/
 local.properties
 *.iml
-build/
-app/build/
-*.jks
 *.keystore
+*.jks
+out/
+evidence/
+__pycache__/
+app/src/main/assets/www/art/atlas.webp

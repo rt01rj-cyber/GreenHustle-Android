@@ -1,330 +1,129 @@
-(() => {
-  'use strict';
-  const E = window.GreenHustleEngine;
-  const KEY = 'green_hustle_save_v1';
-  const $ = (id) => document.getElementById(id);
-
-  let state = null;
-  let selectedIndex = null;
-  let privacyLocked = false;
-  let aiBusy = false;
-  let toastTimer = null;
-
-  function showScreen(which) {
-    $('menuScreen').classList.toggle('hidden', which !== 'menu');
-    $('gameScreen').classList.toggle('hidden', which !== 'game');
-  }
-
-  function save() {
-    if (!state) return;
-    try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (_) {}
-    refreshContinue();
-  }
-
-  function refreshContinue() {
-    let good = false;
-    try {
-      const raw = localStorage.getItem(KEY);
-      good = !!raw && !!JSON.parse(raw).players;
-    } catch (_) {}
-    $('continueBtn').classList.toggle('hidden', !good);
-  }
-
-  function startGame(mode) {
-    const target = Number($('targetSelect').value);
-    const difficulty = $('difficultySelect').value;
-    const players = mode === 'solo' ? Number($('aiCount').value) + 1 : Number($('localCount').value);
-    state = E.newGame({mode, target, difficulty, players});
-    selectedIndex = null;
-    privacyLocked = mode === 'local';
-    showScreen('game');
-    save();
-    render();
-    if (privacyLocked) showPass(state.players[state.currentPlayer].name, true);
-  }
-
-  function continueGame() {
-    try {
-      state = E.reviveState(JSON.parse(localStorage.getItem(KEY)));
-      selectedIndex = null;
-      privacyLocked = state.mode === 'local' && !state.roundEnded;
-      showScreen('game');
-      render();
-      if (privacyLocked) showPass(state.players[state.currentPlayer].name, true);
-    } catch (err) {
-      localStorage.removeItem(KEY);
-      refreshContinue();
-      toast('That save could not be loaded.');
-    }
-  }
-
-  function goHome() {
-    if (state) save();
-    aiBusy = false;
-    closeModal();
-    $('passOverlay').classList.add('hidden');
-    showScreen('menu');
-    refreshContinue();
-  }
-
-  function render() {
-    if (!state) return;
-    const p = state.players[state.currentPlayer];
-    $('roundLabel').textContent = `Round ${state.round}`;
-    $('deckLabel').textContent = `Deck ${state.deck.length}`;
-    $('targetLabel').textContent = `Goal ${E.MONEY(state.target)}`;
-
-    $('scoreStrip').innerHTML = state.players.map((q, i) => {
-      const market = E.stashValue(q) + q.securedCash;
-      const pressure = q.heat.length ? ` · ⚠ ${q.heat.length}` : '';
-      return `<div class="player-pill ${i===state.currentPlayer?'active':''}">
-        <div class="name">${esc(q.name)}${q.isHuman?'':' · AI'}</div>
-        <div class="money">${E.MONEY(q.total)}</div>
-        <div class="mini">Pitch ${q.marketOpen?'open':'closed'} · table ${E.MONEY(market)}${pressure}</div>
-      </div>`;
-    }).join('');
-
-    $('turnName').textContent = `${p.name}'s turn`;
-    $('turnHint').textContent = state.roundEnded ? 'round complete' : (!p.isHuman ? 'thinking…' : state.drawn ? 'play or bin one card' : 'draw first');
-    renderStatus(p);
-    renderMarket(p);
-    renderLog();
-    renderHand(p);
-
-    if (state.roundEnded) showRoundResults();
-    else if (!p.isHuman) maybeRunAi();
-  }
-
-  function renderStatus(p) {
-    const chips = [];
-    chips.push(`<span class="chip">${p.marketOpen?'🏪 Pitch open':'🔐 Pitch closed'}</span>`);
-    if (p.heat.length) p.heat.forEach(h => chips.push(`<span class="chip heat">${h.icon||'⚠'} ${esc(h.title)}</span>`));
-    if (p.shieldTokens) chips.push(`<span class="chip safe">🛡 ${p.shieldTokens} stock shield${p.shieldTokens===1?'':'s'}</span>`);
-    if (p.heatImmunity) chips.push(`<span class="chip safe">📒 next pressure blocked</span>`);
-    if (p.nextStockMultiplier > 1) chips.push(`<span class="chip">📈 next stock ×${p.nextStockMultiplier}</span>`);
-    if (p.securedCash) chips.push(`<span class="chip safe">💷 ${E.MONEY(p.securedCash)} banked</span>`);
-    if (p.roundPenalty) chips.push(`<span class="chip heat">🧾 -${E.MONEY(p.roundPenalty)}</span>`);
-    $('statusChips').innerHTML = chips.join('');
-  }
-
-  function renderMarket(p) {
-    if (!p.stash.length) {
-      $('marketArea').innerHTML = `<div class="empty-market">${p.marketOpen?'Pitch open — no Stock played yet':'Open the pitch to start building value'}</div>`;
-      return;
-    }
-    $('marketArea').innerHTML = p.stash.map((s, i) => `<div class="stash-card ${s.protected?'protected':''}" style="--tilt:${(i%3-1)*1.2}deg">
-      ${s.protected?'<span class="shield">🔒</span>':''}
-      <div class="icon">${s.icon||'🌿'}</div><div class="s-title">${esc(s.title)}</div>
-      <div class="s-value">${E.MONEY(s.value*(s.multiplier||1))}</div>
-      ${(s.multiplier||1)>1?`<div class="boost">PRICE SPIKE ×${s.multiplier}</div>`:''}
-    </div>`).join('');
-  }
-
-  function renderLog() {
-    $('gameLog').innerHTML = state.log.slice(0,4).map(x=>`<div>${esc(x)}</div>`).join('');
-  }
-
-  function renderHand(p) {
-    const visible = p.isHuman && !privacyLocked && !state.roundEnded;
-    $('handOwner').textContent = visible ? `${p.name}'s hand` : (!p.isHuman ? `${p.name} is playing` : 'Hand hidden');
-    $('handSub').textContent = visible ? `${p.hand.length} cards · projected round ${E.MONEY(E.projectedRoundScore(p))}` : '';
-    $('drawBtn').classList.toggle('hidden', !visible || state.drawn);
-    $('drawBtn').disabled = !visible || state.drawn;
-
-    if (!visible) {
-      $('hand').innerHTML = `<div class="empty-market">${!p.isHuman?'AI turn in progress':'Pass the device before revealing this hand'}</div>`;
-      $('cardAction').classList.add('hidden');
-      return;
-    }
-
-    if (selectedIndex != null && selectedIndex >= p.hand.length) selectedIndex = null;
-    $('hand').innerHTML = p.hand.map((c, i) => {
-      const playable = state.drawn && E.cardPlayable(state, state.currentPlayer, i);
-      const bottom = c.kind==='stock' ? E.MONEY(c.value) : c.penalty ? `-${E.MONEY(c.penalty)}` : '';
-      return `<button class="hand-card kind-${c.kind} ${selectedIndex===i?'selected':''} ${state.drawn&&!playable?'unplayable':''}" data-i="${i}">
-        <div class="type">${esc(c.kind)}</div><div class="big-icon">${c.icon||'🃏'}</div>
-        <div class="title">${esc(c.title)}</div><div class="desc">${esc(c.text||'')}</div>
-        ${bottom?`<div class="value ${c.penalty?'penalty':''}">${bottom}</div>`:''}
-      </button>`;
-    }).join('');
-    [...$('hand').querySelectorAll('.hand-card')].forEach(btn => btn.addEventListener('click', () => {
-      selectedIndex = Number(btn.dataset.i); renderCardAction();
-      [...$('hand').children].forEach((x,j)=>x.classList.toggle('selected',j===selectedIndex));
-    }));
-    renderCardAction();
-  }
-
-  function renderCardAction() {
-    const p = state && state.players[state.currentPlayer];
-    if (!p || selectedIndex == null || !state.drawn || privacyLocked || !p.isHuman || state.roundEnded) {
-      $('cardAction').classList.add('hidden'); return;
-    }
-    const c = p.hand[selectedIndex];
-    if (!c) { $('cardAction').classList.add('hidden'); return; }
-    const playable = E.cardPlayable(state, state.currentPlayer, selectedIndex);
-    $('cardAction').innerHTML = `<div class="action-title"><span>${c.icon||'🃏'} ${esc(c.title)}</span><span>${c.kind.toUpperCase()}</span></div>
-      <div class="action-buttons">
-        <button id="playSelected" class="play-btn" ${playable?'':'disabled'}>${playable?(c.target?'Choose rival':'Play card'):"Can't play now"}</button>
-        <button id="binSelected" class="danger-btn">Bin card</button>
-      </div>`;
-    $('cardAction').classList.remove('hidden');
-    $('playSelected').addEventListener('click', () => { if (playable) beginPlaySelected(); });
-    $('binSelected').addEventListener('click', discardSelected);
-  }
-
-  function drawCard() {
-    const r = E.draw(state, state.currentPlayer);
-    if (!r.ok) toast(r.message);
-    selectedIndex = null;
-    save(); render();
-  }
-
-  function beginPlaySelected() {
-    const p = state.players[state.currentPlayer];
-    const c = p.hand[selectedIndex];
-    if (!c) return;
-    if (c.target) return chooseTarget(c);
-    finishPlay(null);
-  }
-
-  function chooseTarget(card) {
-    const source = state.currentPlayer;
-    const rivals = state.players.map((p,i)=>({p,i})).filter(x=>x.i!==source);
-    const html = `<button class="close" id="closeTarget">✕</button><h2>${card.icon} ${esc(card.title)}</h2><p>${esc(card.text)}</p><div class="target-list">
-      ${rivals.map(({p,i})=>`<button class="target-btn" data-target="${i}"><span><b>${esc(p.name)}</b><br><small>${p.heat.length} pressure · ${p.stash.length} stock cards</small></span><b>${E.MONEY(p.total+E.stashValue(p))}</b></button>`).join('')}
-      </div>`;
-    openModal(html,'target');
-    $('closeTarget').onclick = closeModal;
-    [...$('modalCard').querySelectorAll('.target-btn')].forEach(b => b.onclick = () => { closeModal(); finishPlay(Number(b.dataset.target)); });
-  }
-
-  function finishPlay(targetIndex) {
-    const oldPlayer = state.currentPlayer;
-    const r = E.playCard(state, oldPlayer, selectedIndex, targetIndex);
-    if (!r.ok) { toast(r.message); return; }
-    selectedIndex = null;
-    save();
-    if (state.mode === 'local' && !state.roundEnded && state.currentPlayer !== oldPlayer) {
-      privacyLocked = true; showPass(state.players[state.currentPlayer].name, false);
-    }
-    render();
-  }
-
-  function discardSelected() {
-    const oldPlayer = state.currentPlayer;
-    const r = E.discardCard(state, oldPlayer, selectedIndex);
-    if (!r.ok) { toast(r.message); return; }
-    selectedIndex = null;
-    save();
-    if (state.mode === 'local' && !state.roundEnded && state.currentPlayer !== oldPlayer) {
-      privacyLocked = true; showPass(state.players[state.currentPlayer].name, false);
-    }
-    render();
-  }
-
-  function showPass(name, first) {
-    $('passTitle').textContent = first ? `${name}, you're up` : `Pass to ${name}`;
-    $('passText').textContent = 'The hand is hidden. Only tap Reveal when the next player has the device.';
-    $('passOverlay').classList.remove('hidden');
-  }
-
-  function revealHand() {
-    privacyLocked = false;
-    $('passOverlay').classList.add('hidden');
-    render();
-  }
-
-  function maybeRunAi() {
-    if (!state || aiBusy || state.roundEnded || state.gameOver) return;
-    const p = state.players[state.currentPlayer];
-    if (p.isHuman) return;
-    aiBusy = true;
-    setTimeout(() => {
-      if (!state || state.roundEnded) { aiBusy=false; return; }
-      if (!state.drawn) E.draw(state, state.currentPlayer);
-      save(); render();
-      setTimeout(() => {
-        if (!state || state.roundEnded) { aiBusy=false; return; }
-        const idx = state.currentPlayer;
-        const move = E.chooseAiMove(state, idx);
-        if (move) {
-          if (move.discard) E.discardCard(state, idx, move.handIndex);
-          else E.playCard(state, idx, move.handIndex, move.targetIndex);
-        }
-        save(); aiBusy=false; render();
-      }, 480);
-    }, 380);
-  }
-
-  function showRoundResults() {
-    if ($('modal').dataset.kind === 'round') return;
-    const lr = state.lastRound;
-    if (!lr) return;
-    const rows = lr.details.map(d => {
-      const p = state.players[d.index];
-      const bits = [`Protected ${E.MONEY(d.protectedValue)}`, `Exposed ${E.MONEY(d.exposedValue)}`];
-      if (d.lossPct) bits.push(`exposed loss ${d.lossPct}%`);
-      if (d.secured) bits.push(`banked +${E.MONEY(d.secured)}`);
-      if (d.roundPenalty) bits.push(`bills -${E.MONEY(d.roundPenalty)}`);
-      if (d.handPenalty) bits.push(`hand risk -${E.MONEY(d.handPenalty)}`);
-      if (d.bonus) bits.push(`round bonus +${E.MONEY(d.bonus)}`);
-      return `<div class="result-row"><b>${esc(p.name)}</b><strong>+${E.MONEY(d.totalForRound)}</strong><small>${bits.join(' · ')} · total ${E.MONEY(p.total)}</small></div>`;
-    }).join('');
-
-    if (state.gameOver) {
-      const winner = state.players[state.winner];
-      openModal(`<h2>🏆 ${esc(winner.name)} wins</h2><p>${esc(lr.reason)} Final total: <b>${E.MONEY(winner.total)}</b>.</p><div class="results">${rows}</div><button id="newGameBtn" class="primary" style="width:100%">Back to menu</button>`,'round');
-      $('newGameBtn').onclick = () => { localStorage.removeItem(KEY); state=null; closeModal(); goHome(); };
-    } else {
-      openModal(`<h2>Round ${state.round} complete</h2><p>${esc(lr.reason)}</p><div class="results">${rows}</div><button id="nextRoundBtn" class="primary" style="width:100%">Start round ${state.round+1}</button>`,'round');
-      $('nextRoundBtn').onclick = () => {
-        E.nextRound(state); selectedIndex=null; closeModal(); save();
-        if (state.mode==='local') { privacyLocked=true; showPass(state.players[state.currentPlayer].name,true); }
-        render();
-      };
-    }
-  }
-
-  function showRules() {
-    openModal(`<button class="close" id="closeRules">✕</button><h2>How to play</h2>
-      <p><b>Goal:</b> finish rounds with valuable stock and be the first player to reach the chosen winning total.</p>
-      <ol class="rules-list">
-        <li>On your turn, <b>draw one card</b>.</li>
-        <li>Then <b>play one card</b> or bin one card you do not want.</li>
-        <li>You need <b>Pitch Open</b> before Stock can go onto your table.</li>
-        <li><b>Pressure</b> disrupts rivals. Supply Freeze blocks Stock; other pressure can reduce exposed value at scoring.</li>
-        <li><b>Protection</b> secures valuable Stock or blocks incoming pressure.</li>
-        <li>Play <b>Cash Out</b> with an open, pressure-free pitch to end the round. The round also ends when the deck runs out.</li>
-        <li>Protected Stock scores in full. Exposed Stock can be reduced by pressure and Price Crash. Risk cards left in your hand cost money.</li>
-      </ol>
-      <div class="legend"><div>🏪 Market</div><div>🌿 Stock</div><div>📋 Pressure</div><div>✅ Relief</div><div>🛡 Protection</div><div>📈 Action</div></div>
-      <p><small>This is an original game prototype inspired by classic competitive draw-and-play card games. It does not use the original Grass deck, text or artwork.</small></p>`,'rules');
-    $('closeRules').onclick = closeModal;
-  }
-
-  function openModal(html, kind='generic') {
-    $('modalCard').innerHTML = html;
-    $('modal').dataset.kind = kind;
-    $('modal').classList.remove('hidden');
-  }
-  function closeModal() { $('modal').classList.add('hidden'); $('modal').dataset.kind=''; }
-
-  function toast(message) {
-    clearTimeout(toastTimer); $('toast').textContent = message; $('toast').classList.remove('hidden');
-    toastTimer = setTimeout(()=>$('toast').classList.add('hidden'), 1900);
-  }
-
-  function esc(v) { return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-
-  $('soloBtn').addEventListener('click', () => startGame('solo'));
-  $('localBtn').addEventListener('click', () => startGame('local'));
-  $('continueBtn').addEventListener('click', continueGame);
-  $('rulesBtn').addEventListener('click', showRules);
-  $('homeBtn').addEventListener('click', goHome);
-  $('drawBtn').addEventListener('click', drawCard);
-  $('revealBtn').addEventListener('click', revealHand);
-  $('modal').addEventListener('click', e => { if (e.target === $('modal') && $('modal').dataset.kind !== 'round') closeModal(); });
-
-  refreshContinue();
-  showScreen('menu');
-})();
+(function(){
+'use strict';
+var E=window.HotBox,root=document.getElementById('root'),overlay=document.getElementById('overlay'),handoff=document.getElementById('handoff');
+var KEY='hotbox-save-v2',PREF='hotbox-settings-v2';
+var state=null,screen='menu',mode='solo',modal='',locked=false,viewSeat=null,timer=null,epoch=0,paused=false,lastEvent=0,noticeTimer=null,audio=null;
+var prefs={sound:false,motion:!window.matchMedia('(prefers-reduced-motion: reduce)').matches,speed:700,players:3,rounds:3,difficulty:'sharp'};
+try{var savedPrefs=JSON.parse(localStorage.getItem(PREF)||'{}');Object.keys(prefs).forEach(function(k){if(savedPrefs[k]!=null)prefs[k]=savedPrefs[k];});}catch(e){}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+function icon(id){var p={menu:'M4 6h16M4 12h16M4 18h16',close:'M6 6l12 12M18 6L6 18',arrow:'M4 12h16M14 6l6 6-6 6',cards:'M5 7h12v14H5zM8 3h12v14',bank:'M3 9l9-6 9 6H3zM5 11v8M10 11v8M15 11v8M20 11v8M3 21h19',lock:'M6 10h12v11H6zM8 10V7a4 4 0 018 0v3',alert:'M12 3L2 21h20L12 3zM12 9v5M12 17v1',shield:'M12 3l8 3v6c0 5-8 9-8 9s-8-4-8-9V6l8-3zM8 12l3 3 5-6',phone:'M7 2h10v20H7zM10 18h4',users:'M8 12a4 4 0 110-8 4 4 0 010 8zM2 21v-3a6 6 0 0112 0v3M17 4a4 4 0 010 8M18 15a4 4 0 014 4v2',clock:'M12 3a9 9 0 110 18 9 9 0 010-18zM12 7v5l4 2',help:'M9 8a3 3 0 016 0c0 2-3 2-3 5M12 16v1M12 2a10 10 0 110 20 10 10 0 010-20z',sound:'M3 9h4l5-4v14l-5-4H3zM16 8a6 6 0 010 8M19 5a10 10 0 010 14',eye:'M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7zM12 9a3 3 0 110 6 3 3 0 010-6z',check:'M4 12l5 5L20 6'}[id]||'M12 3v18M3 12h18';return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="'+p+'"/></svg>';}
+var AV=['you','mags','dai','jay','lez','nix'];
+function art(name,extra){var car=name==='car'?'<svg viewBox="0 0 200 120" aria-hidden="true"><path d="M17 83l12-30 31-5 21-24h54l27 26 18 6 6 33-16 6H29z" fill="#263d50" stroke="#55ddf9" stroke-width="3"/><path d="M67 48l19-18h45l19 19z" fill="#07121d" stroke="#56b7c9" stroke-width="2"/><circle cx="47" cy="90" r="15" fill="#060b12" stroke="#a4c6d6" stroke-width="5"/><circle cx="158" cy="90" r="15" fill="#060b12" stroke="#a4c6d6" stroke-width="5"/><path d="M24 65h25l-4 9H23M160 60l17 7-3 8h-20" fill="#e9ffb0"/><path d="M90 73h48v11H90z" fill="#ece8b9"/></svg>':'';return '<div class="art art-'+esc(name)+(extra?' '+extra:'')+'">'+car+'</div>';}
+function button(text,action,cls,attrs){return '<button class="button '+(cls||'')+'" data-do="'+action+'" '+(attrs||'')+'>'+text+'</button>';}
+function performButton(text,a,cls){return button(text,'perform',cls,'data-action="'+esc(JSON.stringify(a))+'"');}
+function portrait(p){return art(AV[p.avatar]||'you','avatar');}
+function card(c,large,command){var d=E.def(c),kindIcon={line:'phone',product:'bank',hassle:'alert',counter:'shield',event:'alert'}[d.kind],tag=command?'button':'div';return '<'+tag+' class="card kind-'+d.kind+(large?' large':'')+'"'+(command?' data-do="'+command+'" data-uid="'+esc(c.uid||d.id)+'" aria-label="'+esc(d.name)+', '+esc(d.text)+'"':'')+'><div class="card-title">'+esc(d.name)+'</div>'+art(d.art)+(large?'<div class="card-kind-tag">'+d.kind.toUpperCase()+' CARD</div>':'')+'<div class="card-bottom">'+icon(kindIcon)+'<span>'+d.kind+'</span>'+(d.value?'<strong>'+E.money(d.value)+'</strong>':'')+'</div>'+(large?'<div class="card-rule">'+esc(d.text)+'<em>“'+esc(d.flavour)+'”</em></div>':'')+'</'+tag+'>';}
+function saved(){try{var x=localStorage.getItem(KEY);return x?E.restore(x):null;}catch(e){return null;}}
+function save(){if(state)try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){notify('Storage is unavailable. Keep the game open to retain this match.');}}
+function storePrefs(){try{localStorage.setItem(PREF,JSON.stringify(prefs));}catch(e){}document.body.classList.toggle('reduced',!prefs.motion);}
+function stop(){epoch++;clearTimeout(timer);timer=null;}
+function sound(type){if(!prefs.sound)return;try{var Audio=window.AudioContext||window.webkitAudioContext;if(!Audio)return;if(!audio)audio=new Audio();audio.resume();var o=audio.createOscillator(),g=audio.createGain(),t=audio.currentTime;o.connect(g);g.connect(audio.destination);o.type='triangle';o.frequency.setValueAtTime(type==='bank'?800:type==='raptor'?150:type==='counter'?640:340,t);o.frequency.exponentialRampToValueAtTime(type==='bank'?1300:180,t+.13);g.gain.setValueAtTime(.045,t);g.gain.exponentialRampToValueAtTime(.001,t+.18);o.start(t);o.stop(t+.2);}catch(e){}}
+function notify(text){var n=document.getElementById('notice');clearTimeout(noticeTimer);n.textContent=text;n.hidden=false;noticeTimer=setTimeout(function(){n.hidden=true;},3200);}
+function options(vals,current){return vals.map(function(v){return '<option value="'+v[0]+'"'+(String(v[0])===String(current)?' selected':'')+'>'+v[1]+'</option>';}).join('');}
+function renderMenu(){var resume=saved();root.innerHTML='<main class="menu"><div class="menu-inner"><header class="menu-top"><span class="edition">THE UK STREET-SATIRE CARD GAME</span><span class="pill">18+ THEME</span></header><section class="hero">'+art('logo','hero-logo')+'<div class="hero-copy"><h1>BUILD IT.<br>BANK IT.<br><em>BEFORE<br>THE RAID.</em></h1><p>Bad decisions.<br>Good company.<br>Absolutely fictional money.</p></div></section><div class="ribbon"><span>'+icon('users')+'2–6 PLAYERS</span><span>'+icon('phone')+'OFFLINE</span><span>'+icon('cards')+'101 CARDS</span></div><section class="setup"><h2>Take a seat.</h2><div class="choices"><button class="choice '+(mode==='solo'?'active':'')+'" data-do="mode" data-value="solo">Solo vs rivals</button><button class="choice '+(mode==='local'?'active':'')+'" data-do="mode" data-value="local">Pass & play</button></div><div class="form-grid"><label>'+ (mode==='solo'?'Your rivals':'At the table')+'<select id="countSelect">'+options([[2,mode==='solo'?'1 AI rival':'2 players'],[3,mode==='solo'?'2 AI rivals':'3 players'],[4,mode==='solo'?'3 AI rivals':'4 players'],[5,mode==='solo'?'4 AI rivals':'5 players'],[6,mode==='solo'?'5 AI rivals':'6 players']],prefs.players)+'</select></label><label>Match length<select id="roundSelect">'+options([[3,'3 rounds · quick'],[5,'5 rounds · standard'],[7,'7 rounds · long']],prefs.rounds)+'</select></label><label '+(mode==='local'?'hidden':'')+'>Rival difficulty<select id="difficultySelect">'+options([['casual','Casual'],['sharp','Sharp'],['ruthless','Ruthless']],prefs.difficulty)+'</select></label><label>Animation pace<select id="speedSelect">'+options([[400,'Quick'],[700,'Normal'],[1200,'Relaxed']],prefs.speed)+'</select></label></div>'+button('DEAL ME IN '+icon('arrow'),'start','primary wide')+(resume?button('Continue round '+resume.round+' of '+resume.rounds,'continue','wide','style="margin-top:12px"'):'')+'</section><div class="menu-links">'+button(icon('help')+' Learn in a minute','tutorial')+button(icon('cards')+' Meet the deck','gallery')+button('Full rules','rules','quiet')+button('Settings','settings','quiet')+'</div><div class="menu-fan">'+['burner','cali','search','nocomment','raptor'].map(function(id,i){return card({id:id},false).replace('class="card','style="--fan:'+((i-2)*7)+'deg" class="card');}).join('')+'</div><p class="legal">HOT BOX · PLAYTEST 0.2.0<br>A fictional game for adults, not real-world drug or legal advice. Card names do not describe actual police powers or legal defences. No real money, purchases, accounts or adverts.</p></div></main>';}
+function mine(){return state.players[state.mode==='solo'?0:(viewSeat==null?E.seat(state):viewSeat)];}
+function myIndex(){return state.mode==='solo'?0:(viewSeat==null?E.seat(state):viewSeat);}
+function status(p){return '<span class="pill '+(p.line?'live':'')+'">'+icon('phone')+(p.line===2?'Smart Whip':p.line?'Line active':'Line closed')+'</span>'+(p.raid?'<span class="pill hot">'+icon('alert')+'Raided · '+p.raid+' turn'+(p.raid===1?'':'s')+'</span>':'')+(p.fake?'<span class="pill hot">Next bank ×½</span>':'');}
+function renderRival(p,i){var active=i===E.seat(state),st=E.sum(p.stash);return '<button class="rival '+(active?'active ':'')+(p.raid?'raided':'')+'" data-do="rival" data-seat="'+i+'" aria-label="Inspect '+esc(p.name)+'"><div class="rival-top">'+portrait(p)+'<div class="rival-info"><strong>'+esc(p.name)+'</strong><div class="cash">'+E.money(p.bank)+'</div></div></div><small>'+esc(p.style)+'</small><div class="status-line">'+(p.line?'LINE ON':'LINE OFF')+' · '+p.hand.length+' cards'+(p.raid?' · RAID':'')+(p.fake?' · ½':'')+'</div><div class="rival-products">'+(p.stash.length?p.stash.slice(0,6).map(function(c){return '<div class="micro-card art art-'+E.def(c).art+'"><span>'+E.money(E.value(c))+'</span></div>';}).join(''):'<span class="muted" style="font-size:9px">No exposed stash</span>')+'</div></button>';}
+function renderGame(){
+ var idx=myIndex(),p=mine(),seat=E.seat(state),turn=state.players[seat],own=seat===idx&&turn.human,opts=E.legal(state,idx),ev=state.events[0],danger=state.deck.length<=Math.ceil(state.initialDeck/3),last=state.discard[state.discard.length-1];
+ var label=state.phase==='react'?(own?'YOUR RESPONSE':turn.name.toUpperCase()+' RESPONDS'):own?(state.phase==='draw'?'YOUR TURN · DRAW':'YOUR TURN · ONE ACTION'):turn.name.toUpperCase()+' IS PLAYING';
+ var active=own&&state.phase==='draw'&&!locked,others=state.players.map(function(q,i){return {p:q,i:i};}).filter(function(q){return q.i!==idx;});
+ root.innerHTML='<main class="table"><header class="topbar"><button class="icon-button" data-do="pausemenu" aria-label="Pause and menu">'+icon('menu')+'</button><div class="brand">HOT <b>BOX</b></div><div class="round-status">ROUND '+state.round+' / '+state.rounds+'<small>Highest banked total wins</small></div><button class="icon-button" data-do="history" aria-label="Table history">'+icon('clock')+'</button></header><section class="rivals '+(others.length>2?'many':'')+'" aria-label="Rivals">'+others.map(function(q){return renderRival(q.p,q.i);}).join('')+'</section><section class="arena"><div class="table-mark"></div><div class="table-watermark">BANK BEFORE THE RAID</div><div class="piles"><div><button class="pile '+(active?'live':'')+'" data-do="draw" aria-label="Draw a card" '+(active?'':'disabled')+'><div class="brand">HOT<br><b>BOX</b></div><strong>'+(active?'TAP TO DRAW':'DRAW PILE')+'</strong></button><div class="pile-count">'+state.deck.length+' cards left</div></div><div><button class="pile discard" data-do="discard" aria-label="Inspect discard pile">'+(last?art(E.def(last).art):icon('cards'))+'<span class="discard-label">DISCARD</span></button><div class="pile-count">'+state.discard.length+' played</div></div></div><div class="risk-meter '+(danger?'danger':'')+'"><div class="risk-track"><i style="width:'+Math.round(100*state.deck.length/state.initialDeck)+'%"></i></div><small>'+(danger?'RAPTOR ZONE · BANK IT':'RAPTOR HIDES IN THE FINAL THIRD')+'</small></div><div class="action-banner" data-event="'+(ev?ev.type:'')+'">'+(ev&&ev.card?art(E.def(ev.card).art,'event-art'):'<span class="turn-light"></span>')+'<div class="message"><strong>'+esc(label)+'</strong><span aria-live="polite">'+esc(ev?ev.text:'')+'</span></div></div></section><section class="self-zone"><div class="self-header"><div><div class="label">'+(state.mode==='solo'?'YOUR BANK':esc(p.name.toUpperCase())+' · BANK')+'</div><div class="bank-total">'+icon('bank')+E.money(p.bank)+'</div></div><div class="right"><strong>'+E.money(E.sum(p.stash))+' at risk</strong><small>Tap a stashed card to bank it</small></div></div><div class="self-status">'+status(p)+'</div><div class="stash">'+(p.stash.length?p.stash.map(function(c){return '<button class="stash-card" data-do="bankcard" data-uid="'+c.uid+'" aria-label="Bank '+esc(E.def(c).name)+'">'+art(E.def(c).art)+'<span><strong>'+E.money(E.value(c)*(p.fake ? 0.5 : 1))+'</strong><small>BANK '+(p.fake?'½ VALUE':'THIS')+'</small></span></button>';}).join(''):'<div class="stash-placeholder">'+icon('cards')+(p.line?'Play a product. Bank it on a later turn.':'Play Burner Phone to open your line.')+'</div>')+'</div></section><section class="hand-zone"><div class="hand-heading"><strong>'+esc(state.mode==='solo'?'YOUR HAND':p.name.toUpperCase()+"’S HAND")+' <span>('+p.hand.length+')</span></strong><span>'+(locked?'HIDDEN':own&&state.phase==='act'?'PLAY · BANK · OR BIN ONE':'Tap any card to read it')+'</span>'+button('?','rules','quiet')+'</div><div class="hand '+(p.hand.length>7?'long':'')+'">'+(locked?'':p.hand.map(function(c,i){var legal=opts.some(function(a){return a.type==='play'&&a.uid===c.uid;}),html=card(c,false,'inspect');return html.replace('class="card','style="--fan:'+((i-(p.hand.length-1)/2)*2.8)+'deg" class="card '+(legal?'available':own&&state.phase==='act'?'unavailable':'')+' ');}).join(''))+'</div><div class="hand-foot">'+(p.raid?'RAID BLOCKS PRODUCTS & BANKING · YOU CAN STILL DRAW, COUNTER OR BIN':'Draw one · Take one action · Only banked cash survives Raptor')+'</div></section></main>';
+}
+function render(){document.body.classList.toggle('reduced',!prefs.motion);if(screen==='menu'){renderMenu();return;}
+ if(state.mode==='local'&&state.phase!=='round'&&state.phase!=='over'){var target=E.seat(state);if(viewSeat!==target){viewSeat=target;locked=true;}}
+ renderGame();
+ if(locked){showHandoff();return;}
+ handoff.hidden=true;
+ if(state.phase==='round'||state.phase==='over'){if(modal!=='results')showResults();return;}
+ if(state.phase==='react'&&state.players[E.seat(state)].human){if(modal!=='reaction')showReaction();return;}
+ schedule();
+}
+function showHandoff(){stop();var p=state.players[viewSeat];handoff.hidden=false;handoff.innerHTML='<button class="icon-button" data-do="home" aria-label="Back to menu">'+icon('menu')+'</button><div class="inner"><div class="brand">HOT <b>BOX</b></div>'+portrait(p)+'<div class="kicker">'+(state.phase==='react'?'PRIVATE REACTION':'PASS THE DEVICE')+'</div><h2>'+esc(p.name)+', you’re up.</h2><p>Everyone else looks away.<br>Your cards stay hidden until you are ready.</p>'+button('Reveal my hand '+icon('eye'),'reveal','primary')+'</div>';}
+function schedule(){stop();if(!state||screen!=='game'||locked||paused||modal||document.hidden||state.phase==='round'||state.phase==='over')return;var who=state.players[E.seat(state)];if(who.human)return;var token=epoch;timer=setTimeout(function(){if(token!==epoch||paused||modal||screen!=='game')return;var a=E.bot(state);if(a)move(a);},Number(prefs.speed)||700);}
+function animate(ev){if(!ev||ev.seq===lastEvent)return;lastEvent=ev.seq;if(ev.type==='draw')return;sound(ev.type);if(!prefs.motion)return;var el=document.querySelector('.action-banner');if(el)el.classList.add('pop');if(ev.card){var fx=document.getElementById('fx');fx.innerHTML='<div class="fly">'+card({id:ev.card},false)+'</div>';setTimeout(function(){fx.innerHTML='';},500);}}
+function move(a){stop();var res=E.act(state,E.seat(state),a);if(!res.ok){notify(res.error);schedule();return;}modal='';overlay.hidden=true;save();render();animate(state.events[0]);}
+function startGame(force){if(!force&&saved()&&saved().phase!=='over'){showModal('Replace saved match?', '<p class="help">Starting a new table replaces the existing Hot Box save. The old Green Hustle save is separate.</p><div class="sheet-actions">'+button('Start a new match','startforce','primary')+button('Keep my saved match','close')+'</div>','confirm');return;}
+ stop();state=E.create({mode:mode,players:prefs.players,rounds:prefs.rounds,difficulty:prefs.difficulty});screen='game';viewSeat=null;locked=state.mode==='local';modal='';overlay.hidden=true;lastEvent=0;paused=false;save();render();}
+function continueGame(){var s=saved();if(!s){notify('No compatible save is available. Start a new table.');return;}stop();state=s;screen='game';viewSeat=null;locked=s.mode==='local'&&s.phase!=='round'&&s.phase!=='over';modal='';overlay.hidden=true;paused=false;render();}
+function home(){stop();save();screen='menu';modal='';overlay.hidden=true;handoff.hidden=true;locked=false;render();}
+function showModal(title,html,type,extra){stop();modal=type||'info';overlay.hidden=false;overlay.innerHTML='<section class="sheet '+(extra||'')+'" role="dialog" aria-modal="true" aria-label="'+esc(title)+'"><header class="sheet-head"><h2>'+esc(title)+'</h2>'+(['results','reaction'].indexOf(modal)<0?'<button class="icon-button" data-do="close" aria-label="Close">'+icon('close')+'</button>':'')+'</header>'+html+'</section>';}
+function closeModal(){modal='';overlay.hidden=true;render();}
+function findCard(uid){var all=E.catalog.map(function(d){return {id:d.id};});if(state)all=mine().hand.concat(mine().stash,state.discard,all);return all.find(function(c){return c.uid===uid||c.id===uid;});}
+function inspect(uid,banking){var c=findCard(uid);if(!c)return;var d=E.def(c),body=card(c,true),acts=[],reason='';
+ if(state&&screen==='game'){
+  var legal=E.legal(state,myIndex()),plays=legal.filter(function(a){return a.type===(banking?'bank':'play')&&a.uid===c.uid;});
+  if(plays.length){if(plays[0].target!=null)acts.push(button('Choose a rival '+icon('arrow'),'target','danger','data-uid="'+c.uid+'"'));else acts.push(performButton((banking?'Bank '+E.money(E.value(c)*(mine().fake ? 0.5 : 1)):'Play '+d.name),plays[0],'primary'));}
+  else if(E.seat(state)!==myIndex())reason='You can inspect cards while your rivals play.';
+  else if(state.phase==='draw')reason='Draw one card first, then choose your action.';
+  else if(mine().raid&&(d.kind==='product'||banking))reason='Raided: play a counter or wait out the two-turn block.';
+  else if(!mine().line&&(d.kind==='product'||banking))reason='Play Burner Phone or Smart Whip to activate your line first.';
+  else if(d.id==='dash')reason='Dash It is a reaction to police attacks, not a regular play.';
+  else reason='This card has no eligible effect right now. You can keep it or bin it.';
+  var bin=legal.find(function(a){return a.type==='discard'&&a.uid===c.uid;});if(bin)acts.push(performButton('Bin this card',bin,'quiet'));
+ }
+ body+='<div class="sheet-actions">'+acts.join('')+button('Back to the table','close','quiet')+'</div>'+(reason?'<p class="reason">'+esc(reason)+'</p>':'');showModal('Read your card',body,'card','card-sheet');}
+function chooseTarget(uid){var c=findCard(uid),legal=E.legal(state,myIndex()).filter(function(a){return a.type==='play'&&a.uid===uid&&a.target!=null;});var html='<p class="help">'+esc(E.def(c).text)+'</p><div class="stack">'+legal.map(function(a){var p=state.players[a.target];return '<button class="target" data-do="perform" data-action="'+esc(JSON.stringify(a))+'">'+portrait(p)+'<span><strong>'+esc(p.name)+'</strong><div class="target-stats">'+p.hand.length+' hidden cards · '+E.money(E.sum(p.stash))+' exposed</div></span><span class="amount">'+E.money(p.bank)+'</span></button>';}).join('')+'</div>';showModal(E.def(c).name+' · choose a rival',html,'target');}
+function showRival(i){var p=state.players[i],html='<div class="row">'+portrait(p)+'<div><strong>'+esc(p.style)+'</strong><p class="help">'+E.money(p.bank)+' banked · '+p.hand.length+' cards face down</p></div></div><div class="self-status">'+status(p)+'</div><p class="help">Exposed stash: '+E.money(E.sum(p.stash))+'. The hand stays private.</p><div class="gallery">'+p.stash.map(function(c){return card(c,false);}).join('')+'</div>';showModal(p.name+'’s table',html,'rival');}
+function showReaction(){var pending=state.pending,p=state.players[pending.to],d=E.def(pending.card),opts=E.legal(state,pending.to),html='<div class="reaction-head"><h3>'+esc(state.players[pending.from].name)+' played '+esc(d.name)+'</h3><p>'+esc(d.text)+'</p></div>';html+=art(d.art,'tutor-art');html+='<div class="sheet-actions">';opts.forEach(function(a){if(a.type==='accept')return;var label=a.card==='nocomment'?'NO COMMENT · cancel the hit':'DASH IT · sacrifice '+E.def(p.hand.find(function(c){return c.uid===a.sacrifice;})).name;html+=performButton(label,a,'primary');});html+=performButton('Take the hit',{type:'accept'},'danger')+'</div><p class="reason">Your response does not use up your next turn. Banked cash is not seized.</p>';showModal(p.name+' · fight back',html,'reaction');}
+function showResults(){var final=state.phase==='over',html='<div class="raptor-header">'+art('raptor')+'<div><h2>OPERATION<br>RAPTOR</h2><p>The round is over.<br>Only banked money survived.</p></div></div>';
+ if(final)html+='<div class="winner-title">'+esc(state.winners.map(function(i){return state.players[i].name;}).join(' & '))+(state.winners.length>1?' share the win.':' takes the table.')+'</div>';
+ var sorted=state.results.slice().sort(function(a,b){return b.total-a.total;});html+=sorted.map(function(r,i){var p=state.players[r.seat];return '<div class="result '+(final&&state.winners.indexOf(r.seat)>=0?'winner':'')+'" style="--i:'+i+'">'+portrait(p)+'<div><strong>'+esc(r.name)+'</strong><small>Banked this round: '+E.money(r.banked)+'</small><small class="lost">Unbanked lost: '+E.money(r.lost)+'</small></div><div class="score"><strong>'+E.money(r.total)+'</strong><small>MATCH TOTAL</small></div></div>';}).join('');html+='<div class="sheet-actions">'+button(final?'Back to the menu':'Deal round '+(state.round+1)+' '+icon('arrow'),final?'home':'nextround','primary')+button('Review table history','history','quiet')+'</div>';showModal(final?'Match complete':'Round '+state.round+' complete',html,'results');sound('raptor');}
+var RULES=[
+ ['Open the line','Everyone starts with five cards, including a Burner Phone. Play it to open your line. Smart Whip can open or upgrade it.'],
+ ['Draw, then take ONE action','Play a card, bank one exposed product, or bin a card. Banking is an alternative to playing — not a free extra. Your stash holds at most six cards.'],
+ ['Stash is not cash','Play products onto your exposed table. On a later turn, bank one of them. Only banked value counts towards your match total.'],
+ ['Hit a rival','Section 60 removes their biggest exposed product, or their biggest hand product when their stash is empty. Taxed steals a random hidden product; it never lets you browse a rival’s hand. Smart Whip protects only £5k hand cards from Taxed.'],
+ ['Fight back','No Comment reacts to cancel Raid or Section 60. Dash It cancels either by also discarding a hand product. No Comment can clear your own active Raid. Good Solicitor clears your Raid and Fake Batch on your turn.'],
+ ['No dead-end turns','Raid blocks selling and banking for two of your turns, but you still draw and may play other cards or bin one. Fake Batch halves your next bank once; the penalty cannot stack.'],
+ ['Bank before the raid','Operation Raptor is shuffled into the final third of the draw pile after hands are dealt. Drawing it ends the round immediately. All unbanked products, including those in hands, are lost.'],
+ ['Take the table','Play 3, 5 or 7 rounds. The highest banked match total wins. Exact ties share the win. There are no unbanked bonuses, purchases or real-money stakes.']
+];
+function rules(){showModal('The rules', '<div class="rules">'+RULES.map(function(r,i){return '<div class="rule"><div class="num">'+(i+1)+'</div><div><b>'+r[0]+'</b><br>'+r[1]+'</div></div>';}).join('')+'</div><p class="help">Fictional card effects only. “No Comment” is not a real legal shield and this deck is not a description of police powers or legal procedure.</p>','rules');}
+var tutorialIndex=0,TUTOR=[['Your line','phone','You start with a Burner Phone. Draw, then play it to open your line. Without a line, products cannot reach your table.'],['Your stash','cali','Products on the table are EXPOSED, not banked. Rivals can attack them. You can play only one card per turn.'],['Your bank','grow','On a later turn, tap an exposed product and choose Bank. That is your one action. Banked cash survives Operation Raptor.'],['Your rivals','police','Tap a rival to inspect their exposed stash. Play a Hassle card, then choose who gets it. Their hand always stays hidden.'],['Your comeback','solicitor','When police hit, you get a private reaction choice. No Comment cancels it; Dash It also sacrifices a product. There is no rushed timer.'],['Your deadline','raptor','Raptor hides in the deck’s final third. When it appears, all unbanked products vanish. The richest bank after the agreed rounds wins.']];
+function tutorial(n){tutorialIndex=n;var t=TUTOR[n];showModal('Learn · '+(n+1)+' / '+TUTOR.length,art(t[1],'tutor-art')+'<h3 style="text-align:center">'+t[0]+'</h3><p class="tutorial-copy">'+t[2]+'</p><div class="dots">'+TUTOR.map(function(_,i){return '<i class="'+(i===n?'active':'')+'"></i>';}).join('')+'</div><div class="sheet-actions two">'+button(n?'Back':'Close',n?'tutprev':'close','quiet')+button(n===TUTOR.length-1?'Got it':'Next '+icon('arrow'),n===TUTOR.length-1?'close':'tutnext','primary')+'</div>','tutorial');}
+function gallery(){showModal('Meet the deck · 101 cards','<p class="help">13 playable designs + Operation Raptor. Tap to read a card. Values are fictional game points.</p><div class="gallery">'+E.catalog.map(function(c){return card({id:c.id},false,'catalogcard');}).join('')+'</div>','gallery');}
+function settings(){showModal('Settings','<div class="setting"><span>Card and cash sounds</span>'+button(prefs.sound?'On':'Off','sound',prefs.sound?'primary':'')+'</div><div class="setting"><span>Motion effects</span>'+button(prefs.motion?'On':'Reduced','motion',prefs.motion?'primary':'')+'</div><div class="setting"><span>Rival pace</span><select id="settingsSpeed">'+options([[400,'Quick'],[700,'Normal'],[1200,'Relaxed']],prefs.speed)+'</select></div><p class="help">No flashing strobe effects. Saves stay on this device. Hot Box saves are separate from Green Hustle.</p>','settings');}
+function history(){showModal('Table talk','<div class="history">'+(state?state.events:[]).map(function(e){return '<div class="history-item">'+(e.card?art(E.def(e.card).art,'event-art'):icon('cards'))+'<span>'+esc(e.text)+'</span></div>';}).join('')+'</div>','history');}
+function readSetup(){prefs.players=Number(document.getElementById('countSelect').value);prefs.rounds=Number(document.getElementById('roundSelect').value);prefs.difficulty=document.getElementById('difficultySelect').value;prefs.speed=Number(document.getElementById('speedSelect').value);storePrefs();}
+document.addEventListener('click',function(e){var b=e.target.closest('[data-do]');if(!b||b.disabled)return;var cmd=b.dataset.do;
+ if(cmd==='mode'){readSetup();mode=b.dataset.value;render();}
+ else if(cmd==='start'){readSetup();startGame(false);}
+ else if(cmd==='startforce')startGame(true);
+ else if(cmd==='continue')continueGame();
+ else if(cmd==='home')home();
+ else if(cmd==='close')closeModal();
+ else if(cmd==='reveal'){locked=false;handoff.hidden=true;render();}
+ else if(cmd==='draw'){sound('draw');move({type:'draw'});}
+ else if(cmd==='perform'){move(JSON.parse(b.dataset.action));}
+ else if(cmd==='inspect')inspect(b.dataset.uid,false);
+ else if(cmd==='bankcard')inspect(b.dataset.uid,true);
+ else if(cmd==='catalogcard'){var d=E.def(b.dataset.uid);showModal(d.name,card({id:d.id},true)+'<p class="reason">'+d.copies+' '+(d.copies===1?'copy':'copies')+' in the deck</p>','catalogcard');}
+ else if(cmd==='target')chooseTarget(b.dataset.uid);
+ else if(cmd==='rival')showRival(Number(b.dataset.seat));
+ else if(cmd==='discard'){var c=state.discard[state.discard.length-1];if(c)showModal('Last discarded card',card(c,true),'discard');else notify('The discard pile is empty.');}
+ else if(cmd==='rules')rules();
+ else if(cmd==='gallery')gallery();
+ else if(cmd==='history')history();
+ else if(cmd==='settings')settings();
+ else if(cmd==='sound'){prefs.sound=!prefs.sound;storePrefs();sound('bank');settings();}
+ else if(cmd==='motion'){prefs.motion=!prefs.motion;storePrefs();settings();}
+ else if(cmd==='tutorial')tutorial(0);
+ else if(cmd==='tutnext')tutorial(Math.min(TUTOR.length-1,tutorialIndex+1));
+ else if(cmd==='tutprev')tutorial(Math.max(0,tutorialIndex-1));
+ else if(cmd==='nextround'){E.nextRound(state);modal='';overlay.hidden=true;viewSeat=null;save();render();}
+ else if(cmd==='pausemenu')showModal('Table paused','<div class="stack">'+button('Back to the table','close','primary')+button('How to play','rules')+button('Settings','settings')+button('Save & main menu','home','quiet')+'</div>','pause');
+});
+document.addEventListener('change',function(e){if(e.target.id==='settingsSpeed'){prefs.speed=Number(e.target.value);storePrefs();}});
+overlay.addEventListener('click',function(e){if(e.target===overlay&&modal!=='reaction'&&modal!=='results')closeModal();});
+document.addEventListener('keydown',function(e){if(e.key==='Escape')back();});
+function pause(){paused=true;stop();save();if(state&&screen==='game'&&state.mode==='local'&&state.phase!=='round'&&state.phase!=='over'){locked=true;showHandoff();}}
+function resume(){paused=false;if(screen==='game')render();}
+function back(){if(locked){home();return true;}if(modal){if(modal==='reaction'||modal==='results')return true;closeModal();return true;}if(screen==='game'){document.querySelector('[data-do="pausemenu"]').click();return true;}return false;}
+document.addEventListener('visibilitychange',function(){if(document.hidden)pause();else resume();});
+window.addEventListener('pagehide',pause);
+window.HotBoxUI={pause:pause,resume:resume,back:back,state:function(){return state?JSON.parse(JSON.stringify(state)):null;}};
+if(location.hostname==='127.0.0.1'||location.hostname==='localhost')window.HotBoxUI.testLoad=function(s){stop();state=E.restore(s);screen='game';viewSeat=null;modal='';overlay.hidden=true;locked=false;paused=false;render();};
+storePrefs();render();document.body.dataset.ready='1';console.info('HOTBOX_WEB_READY');
+}());

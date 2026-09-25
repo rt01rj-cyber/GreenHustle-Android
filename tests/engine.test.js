@@ -1,66 +1,26 @@
-const assert = require('assert');
+'use strict';
+const assert = require('node:assert/strict');
 const E = require('../app/src/main/assets/www/engine.js');
-
-function findCardIndex(p, id) { return p.hand.findIndex(c => c.id === id); }
-function inject(p, id) {
-  const def = E.catalogById[id];
-  const c = {...def, uid:'test_'+id+'_'+Math.random()};
-  p.hand.push(c); return p.hand.length-1;
-}
-
-// New game basics
-let s = E.newGame({mode:'solo', players:3, target:300000});
-assert.equal(s.players.length, 3);
-assert.equal(s.players[0].hand.length, 6);
-assert(s.deck.length > 0);
-
-// Must draw before play
-let ix = inject(s.players[0], 'pitch_open');
-let r = E.playCard(s, 0, ix);
-assert.equal(r.ok, false);
-
-// Open market after draw
-E.draw(s, 0);
-ix = findCardIndex(s.players[0], 'pitch_open');
-r = E.playCard(s, 0, ix);
-assert.equal(r.ok, true);
-assert.equal(s.players[0].marketOpen, true);
-
-// Force turn back to player 0 for focused rules tests
-s.currentPlayer = 0; s.drawn = true;
-ix = inject(s.players[0], 'premium_crop');
-r = E.playCard(s, 0, ix);
-assert.equal(r.ok, true);
-assert(s.players[0].stash.some(c => c.id === 'premium_crop'));
-
-// Heat blocks stock
-s.currentPlayer = 1; s.drawn = true;
-let open1 = inject(s.players[1], 'pitch_open');
-E.playCard(s, 1, open1);
-s.currentPlayer = 0; s.drawn = true;
-let heatIx = inject(s.players[0], 'supply_freeze');
-E.playCard(s, 0, heatIx, 1);
-assert(s.players[1].heat.some(h => h.effect === 'freeze'));
-s.currentPlayer = 1; s.drawn = true;
-let stockIx = inject(s.players[1], 'garden_batch');
-assert.equal(E.playCard(s,1,stockIx).ok,false);
-
-// Relief clears heat
-let clearIx = inject(s.players[1], 'all_clear');
-assert.equal(E.playCard(s,1,clearIx).ok,true);
-assert.equal(s.players[1].heat.length,0);
-
-// Score round never yields negative total
-s = E.newGame({mode:'local', players:2, target:300000});
-s.players[0].roundPenalty = 999999;
-E.scoreRound(s,'test');
-assert.equal(s.players[0].total,0);
-assert.equal(s.roundEnded,true);
-
-// AI always returns a move once drawn and hand has cards
-s = E.newGame({mode:'solo', players:2, target:300000});
-s.currentPlayer = 1; E.draw(s,1);
-const move = E.chooseAiMove(s,1);
-assert(move && Number.isInteger(move.handIndex));
-
-console.log('Green Hustle engine tests: PASS');
+let checks=0;
+function test(name,fn){fn();checks++;console.log('PASS '+name);}
+function cards(s){return s.deck.concat(s.discard,...s.players.flatMap(p=>[p.hand,p.stash]),s.pending?[s.pending.card]:[]);}
+function invariant(s){const all=cards(s);assert.equal(all.length,101);assert.equal(new Set(all.map(c=>c.uid)).size,101);s.players.forEach(p=>{assert(p.bank>=0);assert(p.raid>=0);});E.restore(JSON.stringify(s));}
+function fresh(n=3){return E.create({players:n,seed:42});}
+function give(s,i,id){let pool=s.deck,ix=pool.findIndex(c=>c.id===id);if(ix<0){pool=s.discard;ix=pool.findIndex(c=>c.id===id);}assert(ix>=0);const c=pool.splice(ix,1)[0];s.players[i].hand.push(c);return c;}
+function turn(s,i){s.current=i;s.phase='act';s.pending=null;}
+function play(s,i,id,target){turn(s,i);const c=give(s,i,id);assert(E.act(s,i,{type:'play',uid:c.uid,...(target===undefined?{}:{target})}).ok);return c;}
+test('101 cards, fair openers and Raptor only in the final third',()=>{for(let n=2;n<=6;n++){let s=fresh(n);s.players.forEach(p=>assert(p.hand.some(c=>c.id==='burner')));assert(s.deck.findIndex(c=>c.id==='raptor')>=Math.ceil((s.initialDeck-1)*2/3));invariant(s);}});
+test('No action before drawing and no off-turn action',()=>{let s=fresh();assert(!E.act(s,0,{type:'play',uid:s.players[0].hand[0].uid}).ok);assert(!E.act(s,1,{type:'draw'}).ok);assert(E.act(s,0,{type:'draw'}).ok);assert(!E.act(s,0,{type:'draw'}).ok);});
+test('Stash is separate from bank; banking consumes an action',()=>{let s=fresh();play(s,0,'burner');let c=play(s,0,'grow');assert.equal(s.players[0].bank,0);turn(s,0);assert(E.act(s,0,{type:'bank',uid:c.uid}).ok);assert.equal(s.players[0].bank,100000);assert.equal(s.players[0].stash.length,0);assert.equal(s.current,1);invariant(s);});
+test('Operation Raptor ends immediately; hand and exposed value are lost',()=>{let s=fresh();play(s,0,'burner');let c=play(s,0,'grow');turn(s,0);E.act(s,0,{type:'bank',uid:c.uid});play(s,0,'cali');const i=s.deck.findIndex(c=>c.id==='raptor');s.deck.unshift(s.deck.splice(i,1)[0]);s.phase='draw';assert(E.act(s,s.current,{type:'draw'}).ok);assert.equal(s.phase,'round');assert.equal(s.players[0].bank,100000);assert(s.results[0].lost>=50000);invariant(s);});
+test('Police attack offers a genuine out-of-turn counter',()=>{let s=fresh();give(s,1,'nocomment');play(s,0,'raid',1);assert.equal(s.phase,'react');assert.equal(E.seat(s),1);assert(!E.act(s,0,{type:'draw'}).ok);assert(E.act(s,1,{type:'react',card:'nocomment'}).ok);assert.equal(s.players[1].raid,0);assert.equal(s.current,1);invariant(s);});
+test('Raid allows drawing and clears after two affected turns',()=>{let s=fresh();play(s,0,'raid',1);E.act(s,1,{type:'accept'});assert.equal(s.players[1].raid,2);for(let x=0;x<2;x++){s.current=1;s.phase='draw';assert(E.act(s,1,{type:'draw'}).ok);let a=E.legal(s,1).find(a=>a.type==='discard');E.act(s,1,a);}assert.equal(s.players[1].raid,0);invariant(s);});
+test('Solicitor clears both restrictions',()=>{let s=fresh();s.players[0].raid=2;s.players[0].fake=true;play(s,0,'solicitor');assert.equal(s.players[0].raid,0);assert.equal(s.players[0].fake,false);});
+test('Dash It sacrifices exactly one hand product and cancels the hit',()=>{let s=fresh();let b=give(s,1,'baggie');give(s,1,'dash');play(s,0,'raid',1);E.act(s,1,{type:'react',card:'dash',sacrifice:b.uid});assert.equal(s.players[1].raid,0);assert(!s.players[1].hand.some(c=>c.uid===b.uid));invariant(s);});
+test('Fake Batch halves the next bank once only, including £2.5k',()=>{let s=fresh();play(s,1,'burner');let c=play(s,1,'baggie');play(s,0,'fake',1);turn(s,1);E.act(s,1,{type:'bank',uid:c.uid});assert.equal(s.players[1].bank,2500);assert.equal(s.players[1].fake,false);});
+test('Section 60 removes the largest exposed card and respects banked cash',()=>{let s=fresh();s.players[1].bank=25000;play(s,1,'burner');play(s,1,'baggie');play(s,1,'grow');play(s,0,'search',1);E.act(s,1,{type:'accept'});assert.equal(E.sum(s.players[1].stash),5000);assert.equal(s.players[1].bank,25000);invariant(s);});
+test('Taxed availability cannot leak product IDs in hidden hands',()=>{let s=fresh();turn(s,0);const c=give(s,0,'taxed');assert(E.legal(s,0).some(a=>a.uid===c.uid&&a.target===1));const p=s.players[1];s.discard.push(...p.hand);p.hand=[];give(s,1,'dash');assert(E.legal(s,0).some(a=>a.uid===c.uid&&a.target===1));assert(E.act(s,0,{type:'play',uid:c.uid,target:1}).ok);invariant(s);});
+test('Smart Whip protects £5k products from Taxed, not police',()=>{let s=fresh();play(s,1,'whip');let p=s.players[1];s.discard.push(...p.hand);p.hand=[];give(s,1,'baggie');let before=p.hand.length;play(s,0,'taxed',1);assert.equal(p.hand.length,before);play(s,0,'search',1);E.act(s,1,{type:'accept'});assert.equal(p.hand.length,0);invariant(s);});
+test('Save/restore preserves RNG, pending response and available moves',()=>{let s=fresh();play(s,0,'raid',1);let restored=E.restore(JSON.stringify(s));assert.deepEqual(E.legal(restored,1),E.legal(s,1));assert.deepEqual(E.bot(restored),E.bot(s));});
+test('Malformed saves are rejected',()=>{assert.throws(()=>E.restore('{}'));let s=fresh();s.players[0].bank=-1;assert.throws(()=>E.restore(s));});
+console.log(checks+' focused rule tests passed.');
