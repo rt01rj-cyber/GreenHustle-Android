@@ -14,6 +14,11 @@ css='''
 '''
 p=w/'cymra.css'
 if 'CYMRA_041_POSITION' not in p.read_text():p.write_text(p.read_text()+css)
+# The test fixture must search both zones after introducing short encounter decks.
+# Assertions still require all 101 distinct cards; nothing is manufactured or skipped.
+p=root/'tests/cymra.test.js';s=p.read_text()
+s=s.replace("function take(s,id){let i=s.deck.findIndex(c=>c.id===id);assert(i>=0);return s.deck.splice(i,1)[0];}","function take(s,id){let pool=s.deck.some(c=>c.id===id)?s.deck:s.reserve||[];let i=pool.findIndex(c=>c.id===id);assert(i>=0);return pool.splice(i,1)[0];}")
+p.write_text(s)
 p=root/'app/src/androidTest/java/uk/co/hotbox/cardgame/HotBoxSmoke.java'
 s=p.read_text()
 old='            check("HotBoxUI.state().reserve.length>0 && HotBoxUI.state().initialDeck<60", "Shorter Story encounter deck");'
