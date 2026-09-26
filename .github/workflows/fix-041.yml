@@ -31,13 +31,12 @@ jobs:
               encoded=''.join(p.read_text().strip() for p in sorted(Path('fix041-payload').glob('*.b64')))
               raw=base64.b64decode(encoded,validate=True)
               digest=hashlib.sha256(raw).hexdigest()
-              if digest!='50ecce7431d1ce814c1f2a9478d17930a9e0f3c08f4f7c3268666e74d62801cd':
+              if digest!='13a9bc70f906c745acff39376913ed08fd0d783de8adf7278618022143ed8679':
                   raise SystemExit('Payload mismatch: '+digest+'; '+str(len(encoded))+' encoded characters')
               z=zipfile.ZipFile(io.BytesIO(raw))
               for n in z.namelist():
                   if '..' in Path(n).parts or Path(n).is_absolute():raise SystemExit('Invalid archive path')
               z.extractall('.')
-          # Superseded pipelines must not replay 0.3/0.4 transport patches on the fixed app.
           for name in ['build-apk.yml','cymra-04.yml']:
               p=Path('.github/workflows')/name
               if p.exists():
@@ -48,6 +47,7 @@ jobs:
           python3 fix041/prepare.py
       - name: Rules, limits, economy and complete simulations
         run: |
+          set -euo pipefail
           mkdir -p out
           node --check app/src/main/assets/www/app.js
           node --check app/src/main/assets/www/campaign-ui.js
