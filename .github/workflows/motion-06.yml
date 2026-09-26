@@ -1,0 +1,148 @@
+name: Hot Box Motion Comic 0.6
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/motion-comic-06]
+    paths: ['motion06/**', 'app/**', 'tests/**', '.github/workflows/motion-06.yml']
+permissions:
+  contents: read
+concurrency:
+  group: motion06-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Recover delivered 0.4.1 fixes and verified motion-comic sources
+        shell: python
+        run: |
+          from pathlib import Path
+          import base64,hashlib,zipfile,io,json,lzma,subprocess
+          encoded=''.join(p.read_text().strip() for p in sorted(Path('fix041-payload').glob('*.b64')))
+          raw=base64.b64decode(encoded,validate=True)
+          assert hashlib.sha256(raw).hexdigest()=='13a9bc70f906c745acff39376913ed08fd0d783de8adf7278618022143ed8679','041 payload mismatch'
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              for n in z.namelist():
+                  assert not Path(n).is_absolute() and '..' not in Path(n).parts
+              z.extractall('.')
+          subprocess.run(['python3','fix041/prepare.py'],check=True)
+          subprocess.run(['python3','fix041/post.py'],check=True)
+          expected={'engine.js':'e9bb14833c8837c15f06bbc48cc432dce54190e2fb044744ca875c10a86381dd','campaign.js':'d0ef7cb612a6e5e4a004c99e03d864e73ad0e1e5c01dd672d7a724e4d5be7cda'}
+          for name,digest in expected.items():
+              actual=hashlib.sha256((Path('app/src/main/assets/www')/name).read_bytes()).hexdigest()
+              assert actual==digest,'Delivered 0.4.1 rules mismatch: '+name+' '+actual
+          encoded=''.join(Path('motion06/transport-%d.b64'%i).read_text().strip() for i in range(4))
+          raw=base64.b64decode(encoded,validate=True)
+          assert hashlib.sha256(raw).hexdigest()=='27057d0b932210c4fa22bcf87e2c0bf0dc93154483c89979ad4ac5ca25f4bb85','Motion source transport mismatch'
+          sources=json.loads(lzma.decompress(raw))
+          for name,content in sources.items():
+              p=Path(name)
+              assert not p.is_absolute() and '..' not in p.parts and p.parts[0] in ['app','motion06','tests']
+              assert isinstance(content,str)
+              p.parent.mkdir(parents=True,exist_ok=True);p.write_text(content)
+          subprocess.run(['python3','motion06/integrate.py'],check=True)
+          for name,digest in expected.items():
+              assert hashlib.sha256((Path('app/src/main/assets/www')/name).read_bytes()).hexdigest()==digest
+          print('Motion sources recovered; delivered game rules unchanged')
+      - name: Run focused rules and complete-match regressions
+        run: |
+          set -euo pipefail
+          mkdir -p evidence out
+          node --check app/src/main/assets/www/app.js
+          node --check app/src/main/assets/www/campaign-ui.js
+          node --check app/src/main/assets/www/motion-comic.js
+          node tests/engine.test.js | tee evidence/classic-rules.txt
+          node tests/simulate.js | tee evidence/classic-simulations.txt
+          node tests/cymra.test.js | tee evidence/campaign-tests.txt
+          node fix041/regression.js | tee evidence/fix041-tests.txt
+          node tests/motion.test.js | tee evidence/motion-rules.txt
+          python3 scripts/check_assets.py | tee evidence/art-check.txt
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: hotbox-cymra-playtest-signing-v1
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Compile app and installed-APK tests
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+      - name: Verify package and export exact expanded source
+        run: |
+          set -euo pipefail
+          cp app/build/outputs/apk/debug/app-debug.apk out/HotBox-Cymra-0.6.0.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk out/HotBox-Cymra-0.6.0-tests.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs out/HotBox-Cymra-0.6.0.apk > evidence/apk-signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging out/HotBox-Cymra-0.6.0.apk > evidence/apk-package.txt
+          sha256sum out/HotBox-Cymra-0.6.0.apk > out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import zipfile,hashlib,json
+          hashes={}
+          with zipfile.ZipFile('out/HotBox-Cymra-0.6.0-source.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for folder in ['app/src','tests','scripts','fix041','motion06']:
+                  for p in Path(folder).rglob('*'):
+                      if p.is_file() and '__pycache__' not in p.parts and p.suffix not in ['.b64','.jks','.keystore','.ttf','.otf','.woff','.woff2']:
+                          z.write(p);hashes[str(p)]=hashlib.sha256(p.read_bytes()).hexdigest()
+              for name in ['app/build.gradle.kts','build.gradle.kts','settings.gradle.kts','gradle.properties','.github/workflows/motion-06.yml','README.md']:
+                  z.write(name)
+          Path('evidence/source-sha256.json').write_text(json.dumps(hashes,indent=2))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HotBox-Cymra-0.6.0-build
+          path: out/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HotBox-Cymra-0.6.0-build-evidence
+          path: evidence/
+          if-no-files-found: warn
+  android:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [29, 35]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-Cymra-0.6.0-build
+          path: out
+      - name: Recover the exact smoke script
+        run: unzip -oq out/HotBox-Cymra-0.6.0-source.zip motion06/smoke.sh
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash motion06/smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HotBox-Cymra-0.6.0-Android-${{ matrix.api }}-evidence
+          path: evidence/
+          if-no-files-found: warn
