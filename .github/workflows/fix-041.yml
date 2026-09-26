@@ -1,0 +1,145 @@
+name: Hot Box Cymra 0.4.1 fixes
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, fix/cymra-041]
+    paths: ['app/**', 'tests/**', 'scripts/**', 'fix041/**', 'fix041-payload/**', '.github/workflows/fix-041.yml']
+permissions:
+  contents: read
+concurrency:
+  group: hotbox-041-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify and apply scoped fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, hashlib, zipfile, io, re
+          if not Path('fix041/prepare.py').exists():
+              encoded=''.join(p.read_text().strip() for p in sorted(Path('fix041-payload').glob('*.b64')))
+              raw=base64.b64decode(encoded,validate=True)
+              digest=hashlib.sha256(raw).hexdigest()
+              if digest!='50ecce7431d1ce814c1f2a9478d17930a9e0f3c08f4f7c3268666e74d62801cd':
+                  raise SystemExit('Payload mismatch: '+digest+'; '+str(len(encoded))+' encoded characters')
+              z=zipfile.ZipFile(io.BytesIO(raw))
+              for n in z.namelist():
+                  if '..' in Path(n).parts or Path(n).is_absolute():raise SystemExit('Invalid archive path')
+              z.extractall('.')
+          # Superseded pipelines must not replay 0.3/0.4 transport patches on the fixed app.
+          for name in ['build-apk.yml','cymra-04.yml']:
+              p=Path('.github/workflows')/name
+              if p.exists():
+                  text=p.read_text()
+                  text=re.sub(r'(?m)^on:\n[\s\S]*?(?=^permissions:|^concurrency:|^jobs:)', 'on:\n  workflow_dispatch:\n',text,count=1)
+                  p.write_text(text)
+          PY
+          python3 fix041/prepare.py
+      - name: Rules, limits, economy and complete simulations
+        run: |
+          mkdir -p out
+          node --check app/src/main/assets/www/app.js
+          node --check app/src/main/assets/www/campaign-ui.js
+          node tests/engine.test.js | tee out/classic-tests.txt
+          node tests/simulate.js | tee out/classic-simulation.txt
+          node tests/cymra.test.js | tee out/cymra-tests.txt
+          node fix041/regression.js | tee out/fix041-tests.txt
+          python3 scripts/check_assets.py
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: hotbox-cymra-playtest-signing-v1
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Compile app and actual-APK instrumentation
+        run: gradle :app:assembleDebug :app:assembleDebugAndroidTest --stacktrace
+      - name: Verify and collect build
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk out/HotBox-0.4.1.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk out/HotBox-0.4.1-tests.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs out/HotBox-0.4.1.apk > out/signature.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging out/HotBox-0.4.1.apk > out/package.txt
+          sha256sum out/HotBox-0.4.1.apk > out/SHA256SUMS.txt
+          zip -qr out/HotBox-Cymra-0.4.1-source.zip app/src app/build.gradle.kts scripts tests fix041 .github/workflows build.gradle.kts settings.gradle.kts gradle.properties .gitignore README.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.1-build
+          path: out/
+          if-no-files-found: error
+  native:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        api: [29, 35]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.1-build
+          path: out
+      - name: Recover exact prepared test scripts
+        run: unzip -oq out/HotBox-Cymra-0.4.1-source.zip scripts/smoke.sh
+      - name: Emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash scripts/smoke.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: HotBox-Cymra-0.4.1-Android-${{ matrix.api }}-evidence
+          path: evidence/
+          if-no-files-found: warn
+  publish-reviewed-source:
+    needs: [build, native]
+    if: github.ref == 'refs/heads/fix/cymra-041'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cymra-041
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.1-build
+          path: /tmp/hotbox-out
+      - name: Publish prepared sources only after native tests pass
+        env:
+          EXPECTED: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED" || { echo 'Branch changed; no source write performed.'; exit 1; }
+          unzip -oq /tmp/hotbox-out/HotBox-Cymra-0.4.1-source.zip
+          git config user.name 'Hot Box Build'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src app/build.gradle.kts scripts tests fix041 .github/workflows
+          git diff --cached --quiet || git commit -m 'Publish emulator-verified Cymra 0.4.1 fixes [skip ci]'
+          git push origin HEAD:refs/heads/fix/cymra-041
