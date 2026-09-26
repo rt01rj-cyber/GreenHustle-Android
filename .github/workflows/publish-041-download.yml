@@ -1,0 +1,71 @@
+name: Publish verified 0.4.1 download
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/cymra-041]
+    paths: ['.github/workflows/publish-041-download.yml']
+permissions:
+  contents: write
+  actions: read
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/cymra-041
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.1-build
+          run-id: 36210312320
+          github-token: ${{ github.token }}
+          path: out
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.1-Android-29-evidence
+          run-id: 36210312320
+          github-token: ${{ github.token }}
+          path: native29
+      - uses: actions/download-artifact@v4
+        with:
+          name: HotBox-Cymra-0.4.1-Android-35-evidence
+          run-id: 36210312320
+          github-token: ${{ github.token }}
+          path: native35
+      - name: Verify checksums and native evidence before publishing
+        run: |
+          set -euo pipefail
+          sha256sum -c out/SHA256SUMS.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib,json,shutil
+          out=Path('out');dest=Path('dist');dest.mkdir(exist_ok=True)
+          native={}
+          for api in [29,35]:
+              d=Path('native'+str(api))
+              smoke=(d/'native-smoke.txt').read_text()
+              cold=(d/'cold-visible-menu.txt').read_text()
+              assert 'HOTBOX_SMOKE:PASS' in smoke and 'HOTBOX_SMOKE:FAIL' not in smoke
+              assert 'HOTBOX_COLD_VISIBLE_MENU:PASS' in cold and 'HOTBOX_COLD_VISIBLE_MENU:FAIL' not in cold
+              native[str(api)]={'gameplay_save_restore':'PASS','cold_menu_interaction':'PASS'}
+              shutil.copy2(d/'android-cold-interactive.png',dest/('HotBox-0.4.1-Android-'+str(api)+'.png'))
+              (dest/('Android-'+str(api)+'-checks.txt')).write_text(smoke+'\n'+cold)
+          apk=out/'HotBox-0.4.1.apk'
+          digest=hashlib.sha256(apk.read_bytes()).hexdigest()
+          shutil.copy2(apk,dest/'HotBox-Cymra-0.4.1.apk')
+          shutil.copy2(out/'HotBox-Cymra-0.4.1-source.zip',dest/'HotBox-Cymra-0.4.1-source.zip')
+          counts={n:sum(line.startswith('PASS ') for line in (out/n).read_text().splitlines()) for n in ['classic-tests.txt','cymra-tests.txt','fix041-tests.txt']}
+          report={'version':'0.4.1','versionCode':41,'applicationId':'uk.co.hotbox.cymra','workflowRun':36210312320,'apkSha256':digest,'focusedChecks':counts,'classicSimulation':(out/'classic-simulation.txt').read_text().strip(),'campaignSimulationLog':(out/'cymra-tests.txt').read_text(),'native':native,'signing':(out/'signature.txt').read_text(),'notes':['The old v0.4 development signing certificate differs. Export Story before uninstalling it.','Imported version-4 battles retain their saved deal; new deadlines begin at the next encounter.','Some artwork is shared/adapted; the equipment images are scene-backed symbols, not individual print masters.']}
+          (dest/'HotBox-Cymra-0.4.1-validation.json').write_text(json.dumps(report,indent=2))
+          (dest/'SHA256SUMS.txt').write_text(digest+'  HotBox-Cymra-0.4.1.apk\n')
+          readme=Path('README.md');old=readme.read_text()
+          if not old.startswith('# Hot Box: Cymra 0.4.1'):
+              readme.write_text('# Hot Box: Cymra 0.4.1\n\n[Download the tested APK](dist/HotBox-Cymra-0.4.1.apk?raw=true) · [Validation](dist/HotBox-Cymra-0.4.1-validation.json) · [Fix details](FIXES-0.4.1.md)\n\nThe hand-limit, cast, deadlines, shop economy and feedback fixes are included. Android 10 and 15 gameplay/save and direct cold-launch interaction tests passed. This remains a development/playtest build. Export your Story save before removing a differently signed older installation.\n\n## Previous release notes\n\n'+old)
+          print('Verified APK SHA-256:',digest)
+          PY
+          git config user.name 'Hot Box Build'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add dist README.md
+          git diff --cached --quiet || git commit -m 'Publish verified 0.4.1 APK and validation evidence [skip ci]'
+          git push origin HEAD:refs/heads/fix/cymra-041
