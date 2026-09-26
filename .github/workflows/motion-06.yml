@@ -50,6 +50,7 @@ jobs:
               assert isinstance(content,str)
               p.parent.mkdir(parents=True,exist_ok=True);p.write_text(content)
           subprocess.run(['python3','motion06/integrate.py'],check=True)
+          subprocess.run(['python3','motion06/finalise.py'],check=True)
           for name,digest in expected.items():
               assert hashlib.sha256((Path('app/src/main/assets/www')/name).read_bytes()).hexdigest()==digest
           print('Motion sources recovered; delivered game rules unchanged')
